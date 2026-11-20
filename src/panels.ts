@@ -425,8 +425,11 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
     }
     if (cell.facade === 'drawer') {
       box.append(
-        fieldNum('ящиков', cell.drawers, (v) =>
-          setCell(idx, (c) => (c.drawers = Math.max(1, Math.min(12, Math.round(v))))),
+        fieldNum(
+          'ящиков',
+          cell.drawers,
+          (v) => setCell(idx, (c) => (c.drawers = Math.max(1, Math.min(12, Math.round(v))))),
+          { step: '1', min: 1, max: 12 },
         ),
       );
     }
@@ -443,11 +446,15 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
         );
       } else {
         box.append(
-          fieldNum('полок', shelfCount(m, p, cell), (v) =>
-            setCell(idx, (c) => {
-              c.shelves = Math.max(0, Math.min(20, Math.round(v)));
-              c.shelfPitch = null;
-            }),
+          fieldNum(
+            'полок',
+            shelfCount(m, p, cell),
+            (v) =>
+              setCell(idx, (c) => {
+                c.shelves = Math.max(0, Math.min(20, Math.round(v)));
+                c.shelfPitch = null;
+              }),
+            { step: '1', min: 0, max: 20 },
           ),
         );
         box.append(

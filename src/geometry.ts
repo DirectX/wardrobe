@@ -51,6 +51,22 @@ export function findModule(p: Project, id: string): WardModule | undefined {
   return p.modules.find((m) => m.id === id);
 }
 
+/**
+ * Угловая зона боковой стены: от угла до глубины центрального ряда,
+ * упирающегося в этот угол. Боковые модули могут начинаться только после неё.
+ */
+export function cornerStart(p: Project, wall: WallId): number {
+  if (wall === 'center') return 0;
+  const Lc = p.walls.center.length;
+  let depth = 0;
+  for (const m of p.modules) {
+    if (m.wall !== 'center') continue;
+    const touches = wall === 'left' ? m.from <= 1 : wallEnd(m) >= Lc - 1;
+    if (touches) depth = Math.max(depth, m.depth);
+  }
+  return Math.min(depth, p.walls[wall].length);
+}
+
 // ------------------------------------------------------------------ ячейки
 
 export interface CellLayout {

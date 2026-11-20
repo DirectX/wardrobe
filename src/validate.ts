@@ -1,5 +1,5 @@
 import type { Issue, Project } from './types.ts';
-import { WALLS, cellAt, cellsSum, modulesOn, wallEnd } from './geometry.ts';
+import { WALLS, cellAt, cellsSum, cornerStart, modulesOn, wallEnd } from './geometry.ts';
 
 export function validate(p: Project): Issue[] {
   const out: Issue[] = [];
@@ -24,6 +24,16 @@ export function validate(p: Project): Issue[] {
       }
       if (prev && m.from < wallEnd(prev)) {
         out.push({ level: 'error', message: `Модули «${prev.id}» и «${m.id}» пересекаются`, refs: [prev.id, m.id] });
+      }
+      if (wall !== 'center') {
+        const cs = cornerStart(p, wall);
+        if (cs > 0 && m.from < cs - 1) {
+          out.push({
+            level: 'error',
+            message: `«${label}»: заходит в угловую зону (ближе ${cs} мм к углу — глубина центрального ряда)`,
+            refs: [m.id],
+          });
+        }
       }
       prev = m;
     }

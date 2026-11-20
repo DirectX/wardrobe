@@ -4,6 +4,7 @@ import { defaultCells, newModule } from './defaults.ts';
 import {
   cellIndexAt,
   clamp,
+  cornerStart,
   layoutCells,
   modulesOn,
   rescaleCells,
@@ -19,10 +20,10 @@ export const MIN_CELL_W = 120;
 
 const minCell = (p: Project) => Math.max(MIN_CELL_W, p.grid);
 
-/** Первый свободный слот стены шириной w; -1 если не влезает. */
+/** Первый свободный слот стены шириной w (в обход угловой зоны); -1 если не влезает. */
 function firstFreeFrom(p: Project, wall: WallId, w: number): number {
   const ms = modulesOn(p, wall);
-  let cursor = 0;
+  let cursor = cornerStart(p, wall);
   for (const m of ms) {
     if (m.from - cursor >= w) return cursor;
     cursor = Math.max(cursor, wallEnd(m));
@@ -33,9 +34,22 @@ function firstFreeFrom(p: Project, wall: WallId, w: number): number {
 export function addModule(kind: ModuleKind, wall: WallId): void {
   const p = store.project;
   const proto = newModule(kind, wall, 0, p);
+  const usable = p.walls[wall].length - cornerStart(p, wall);
+  if (proto.w > usable) {
+    if (usable < MIN_W) {
+      ui.message =
+        cornerStart(p, wall) > 0
+          ? 'Угол занят глубиной центрального ряда — на боковой стене места не осталось'
+          : 'На стене нет места — удлинитe стену или уберите лишние модули';
+      renderAll();
+      return;
+    }
+    proto.w = usable;
+    rescaleCells(proto, proto.w);
+  }
   const from = firstFreeFrom(p, wall, proto.w);
   if (from < 0) {
-    ui.message = 'На стене нет места — удлините стену или уберите лишние модули';
+    ui.message = 'На стене нет места — удлинитe стену или уберите лишние модули';
     renderAll();
     return;
   }
@@ -49,7 +63,9 @@ export function insertModuleAtPointer(kind: ModuleKind, wall: WallId, xMm: numbe
   const p = store.project;
   const draft = structuredClone(p);
   const proto = newModule(kind, wall, 0, draft);
-  const from = clamp(snap(draft, xMm - proto.w / 2), 0, draft.walls[wall].length - proto.w);
+  const lo = cornerStart(draft, wall);
+  if (proto.w > draft.walls[wall].length - lo) proto.w = Math.max(MIN_W, draft.walls[wall].length - lo);
+  const from = clamp(snap(draft, xMm - proto.w / 2), lo, draft.walls[wall].length - proto.w);
   const anchor = { ...proto, from };
   draft.modules.push(anchor);
   if (!resolveAround(draft, wall, anchor)) {
@@ -67,7 +83,7 @@ export function moveModule(id: string, newFrom: number): void {
   const draft = structuredClone(p);
   const m = draft.modules.find((x) => x.id === id);
   if (!m) return;
-  m.from = clamp(snap(draft, newFrom), 0, draft.walls[m.wall].length - m.w);
+  m.from = clamp(snap(draft, newFrom), cornerStart(draft, m.wall), draft.walls[m.wall].length - m.w);
   if (!resolveAround(draft, m.wall, m)) return;
   store.update((pp) => {
     pp.modules = draft.modules;
@@ -117,7 +133,7 @@ export function duplicateModule(id: string): void {
   const original = draft.modules.find((x) => x.id === id)!;
   const copy = structuredClone(original);
   copy.id = uid('m');
-  copy.from = wallEnd(original);
+  copy.from = Math.max(wallEnd(original), cornerStart(draft, copy.wall));
   draft.modules.push(copy);
   if (!resolveAround(draft, copy.wall, copy)) {
     copy.from = firstFreeFrom(draft, copy.wall, copy.w);

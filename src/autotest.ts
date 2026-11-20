@@ -2,6 +2,8 @@
 // Headless-регрессия доменной логики (v2: модули из секций).
 
 import { store } from './store.ts';
+import { select, ui } from './state.ts';
+import { renderProps } from './panels.ts';
 import {
   addCell,
   addModule,
@@ -15,9 +17,10 @@ import {
   splitCell,
   toggleCellFacade,
 } from './edit.ts';
-import { cellAt, cellsSum, modulesOn, shelfYs } from './geometry.ts';
+import { cellAt, cellsSum, cornerStart, layoutCells, modulesOn, shelfYs, wallStart } from './geometry.ts';
 import { validate } from './validate.ts';
 import { migrate } from './migrate.ts';
+import { renderFacade } from './views/facade.ts';
 
 const results: string[] = [];
 let failed = 0;
@@ -28,18 +31,23 @@ function check(name: string, cond: boolean): void {
 }
 
 export function runAutoTest(): void {
-  // 1. добавление модуля
-  const leftBefore = modulesOn(store.project, 'left').length;
-  addModule('drawers', 'left');
-  const left = modulesOn(store.project, 'left');
-  check('addModule: +1 на левой стене', left.length === leftBefore + 1);
+  // 1. добавление модуля (правая стена: удлиним, левый сценарий — под углом)
+  store.update((pp) => (pp.walls.right.length = 1500));
+  const rightBefore = modulesOn(store.project, 'right').length;
+  addModule('drawers', 'right');
+  const right = modulesOn(store.project, 'right');
+  check('addModule: +1 на правой стене', right.length === rightBefore + 1);
   check(
     'addModule: секции-ячейки созданы',
-    !!left[left.length - 1]?.cells.length && left[left.length - 1].cells.every((c) => c.w > 0),
+    !!right[right.length - 1]?.cells.length && right[right.length - 1].cells.every((c) => c.w > 0),
   );
   check(
     'addModule: сумма секций = ширина модуля',
-    left.every((m) => Math.abs(cellsSum(m) - m.w) <= 1),
+    right.every((m) => Math.abs(cellsSum(m) - m.w) <= 1),
+  );
+  check(
+    'addModule: огибает угловую зону',
+    right[right.length - 1].from >= cornerStart(store.project, 'right'),
   );
   check('addModule: ошибок нет', validate(store.project).every((i) => i.level !== 'error'));
 
@@ -206,6 +214,79 @@ export function runAutoTest(): void {
   check('migrate: drawers → 1 секция ящиков', !!old2 && old2.cells.length === 1 && old2.cells[0].facade === 'drawer' && old2.cells[0].drawers === 3);
   check('migrate: суммы ширин сходятся', !!migrated && migrated.modules.every((m) => Math.abs(cellsSum(m) - m.w) <= 2));
   check('migrate: идемпотентна для v2', !!migrate(migrated) && migrate(migrated)!.version === 2);
+
+  // 11. угловые зоны
+  store.update((pp) => {
+    const m1 = pp.modules.find((x) => x.wall === 'center' && x.from === 0);
+    if (m1) m1.depth = 100;
+  });
+  const csL = cornerStart(store.project, 'left');
+  const csR = cornerStart(store.project, 'right');
+  check('corner: зона = глубина центрального ряда у угла', csL === 100 && csR === 600);
+  addModule('wardrobe', 'left');
+  const lm = modulesOn(store.project, 'left').slice(-1)[0];
+  check('corner: левая боковая стартует из-за зоны', !!lm && lm.from === 100);
+  const rm = modulesOn(store.project, 'right').slice(-1)[0];
+  store.checkpoint();
+  moveModule(rm.id, 0);
+  check(
+    'corner: перетаскивание не впускает в угол',
+    (modulesOn(store.project, 'right').find((m) => m.id === rm.id)?.from ?? -1) >= csR,
+  );
+  store.undo();
+  store.update((pp) => {
+    const t = pp.modules.find((m) => m.id === rm.id);
+    if (t) t.from = 0;
+  });
+  check('corner: валидатор ловит заезд в угол', validate(store.project).some((i) => i.message.includes('угловую зону')));
+  store.undo();
+
+  // 12. геометрия рендера: фасады секций на месте корпуса (регрессия двойного from)
+  renderFacade();
+  const facadeSvg = document.getElementById('facade');
+  let renderChecked = 0;
+  let renderOk = !!facadeSvg;
+  for (const m of store.project.modules) {
+    const x0 = wallStart(store.project)[m.wall];
+    const layout = layoutCells(store.project, m);
+    const g = facadeSvg?.querySelector(`g[data-hit="mod"][data-id="${m.id}"]`);
+    if (!g) {
+      renderOk = false;
+      continue;
+    }
+    g.querySelectorAll(':scope > g[data-hit="cell"]').forEach((cg) => {
+      const idx = Number(cg.getAttribute('data-idx'));
+      const cl = layout[idx];
+      if (!cl || cl.cell.facade === null) return;
+      const rect = cg.querySelector('rect');
+      if (!rect) {
+        renderOk = false;
+        return;
+      }
+      const xAttr = parseFloat(rect.getAttribute('x') ?? 'NaN');
+      renderChecked++;
+      const len = store.project.walls[m.wall].length;
+      const expX = m.wall === 'left' ? x0 + len - (cl.x + cl.w) : x0 + cl.x;
+      if (Math.abs(xAttr - expX) > 1.5) renderOk = false;
+    });
+  }
+  check(`render: фасады секций совпадают с корпусом (проверено ${renderChecked})`, renderOk && renderChecked > 0);
+
+  // 13. панель: спиннер полок — шаг 1 и границы (регрессия ±10)
+  const openM = store.project.modules.find((mm) => mm.cells.some((c) => c.facade === null && !c.shelfPitch));
+  if (openM) {
+    select({ kind: 'module', id: openM.id });
+    ui.cell = openM.cells.findIndex((c) => c.facade === null && !c.shelfPitch);
+    const propsEl = document.getElementById('props');
+    if (propsEl) renderProps(propsEl);
+    check(
+      'панель: спиннер полок step=1 с границами 0..20',
+      !!document.querySelector('#props input[step="1"][min="0"][max="20"]'),
+    );
+    select(null);
+  } else {
+    check('панель: найдена открытая секция для проверки спиннера', false);
+  }
 
   // инвариант финальный
   check('инвариант: ошибок нет', validate(store.project).every((i) => i.level !== 'error'));
