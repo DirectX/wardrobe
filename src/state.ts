@@ -7,21 +7,21 @@ export interface Selection {
 
 export const ui = {
   sel: null as Selection | null,
+  /** выбранная ячейка внутри выбранного модуля */
+  cell: null as number | null,
   /** активная стена для кнопок библиотеки */
   wall: 'center' as WallId,
   message: '',
   editing: false,
 };
 
+export function select(sel: Selection | null, cell: number | null = null): void {
+  ui.sel = sel;
+  ui.cell = sel?.kind === 'module' ? cell : null;
+}
+
 /** Камера фасадного вида: zoom — px на мм. */
 export const facadeView = { zoom: 0.2, cx: 2000, cy: 1300 };
-
-/** План всегда авто-вписывается; храним только флаг. */
-export const planView = { auto: true };
-
-export function select(sel: Selection | null): void {
-  ui.sel = sel;
-}
 
 export function sameSel(a: Selection | null, b: Selection | null): boolean {
   if (!a || !b) return a === b;

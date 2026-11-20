@@ -1,20 +1,24 @@
-// Доменная модель. Все размеры — в миллиметрах.
+// Доменная модель v2. Все размеры — в миллиметрах.
+// Базовая единица — ячейка (секция) модуля: ширина, полки, опциональный фасад.
 
 export type WallId = 'left' | 'center' | 'right';
 
-export type CellType = 'door' | 'drawer' | 'open' | 'glass' | 'panel';
+export type FacadeKind = 'door' | 'drawer' | 'panel' | 'glass';
 
-export interface FacadeCell {
-  type: CellType;
-  hinge?: 'left' | 'right';
+export interface Cell {
+  /** ширина секции, мм; сумма ширин ячеек = ширина модуля */
+  w: number;
+  /** null — открытая секция (полки на виду) */
+  facade: FacadeKind | null;
+  hinge: 'left' | 'right';
   /** ключ палитры FACADE_FILLS или hex */
   fill?: string;
-}
-
-/** Ряд фасада; высота ряда = (h - плинтус) * weight / сумма весов. Ряды сверху вниз. */
-export interface FacadeRow {
-  weight: number;
-  cells: FacadeCell[];
+  /** число полок при ручной раскладке */
+  shelves: number;
+  /** если задано — высота одного отсека, полки считаются по ней */
+  shelfPitch: number | null;
+  /** число ящиков для facade='drawer' */
+  drawers: number;
 }
 
 export type ModuleKind = 'wardrobe' | 'shelves' | 'drawers' | 'open' | 'tv-niche';
@@ -22,13 +26,13 @@ export type ModuleKind = 'wardrobe' | 'shelves' | 'drawers' | 'open' | 'tv-niche
 export interface WardModule {
   id: string;
   wall: WallId;
-  /** левый торец вдоль стены, мм (отсчёт от внутреннего угла для боковых стен, от левого угла для центральной) */
+  /** левый торец вдоль стены (для боковых стен — от внутреннего угла) */
   from: number;
   w: number;
   h: number;
   depth: number;
   kind: ModuleKind;
-  facade: FacadeRow[];
+  cells: Cell[];
 }
 
 export interface TvSpec {
@@ -51,7 +55,7 @@ export interface WallSpec {
 }
 
 export interface Project {
-  version: 1;
+  version: 2;
   name: string;
   ceiling: number;
   /** плинтус (цколь), мм */

@@ -1,18 +1,22 @@
 import type { Project } from './types.ts';
 import { defaultProject } from './defaults.ts';
+import { migrate } from './migrate.ts';
 
-const LS_KEY = 'wardrobe:proje…** v1';
+const LS_KEY = 'wardrobe:project:v2';
+const LEGACY_KEY = 'wardrobe:project:v1';
 
 type Listener = () => void;
 
 function loadFromStorage(): Project | null {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as Project;
-    if (p && p.version === 1 && p.walls && Array.isArray(p.modules)) return p;
-  } catch {
-    /* повреждённое сохранение — начинаем заново */
+  for (const key of [LS_KEY, LEGACY_KEY]) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const p = migrate(JSON.parse(raw) as unknown);
+      if (p) return p;
+    } catch {
+      /* повреждённое сохранение — пробуем следующий ключ */
+    }
   }
   return null;
 }

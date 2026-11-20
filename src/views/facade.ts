@@ -2,9 +2,11 @@ import { store } from '../store.ts';
 import { facadeView, ui, select, renderAll } from '../state.ts';
 import {
   WALLS,
+  CARCASS_T,
   findModule,
-  layoutFacade,
+  layoutCells,
   modulesOn,
+  shelfYs,
   totalElevationWidth,
   wallAtX,
   wallStart,
@@ -12,14 +14,15 @@ import {
 import { FACADE_FILLS, KIND_LABEL, WALL_LABEL } from '../defaults.ts';
 import { validate } from '../validate.ts';
 import {
-  cycleCellType,
+  dragCellBoundary,
   insertModuleAtPointer,
   moveModule,
   moveSocket,
   moveTv,
   resizeModule,
+  toggleCellFacade,
 } from '../edit.ts';
-import type { FacadeCell, Project, WardModule } from '../types.ts';
+import type { Cell, Project, WardModule } from '../types.ts';
 
 const COL = {
   plate: '#151922',
@@ -27,24 +30,27 @@ const COL = {
   floor: '#48505e',
   tick: '#3d4450',
   dim: '#8b94a3',
-  body: '#6b5138',
+  carcass: '#5d4531',
+  partition: '#4a3524',
+  interior: '#241c15',
+  shelf: '#8a6a48',
   plinth: '#2a2119',
   accent: '#4da3ff',
+  cell: '#ffd166',
   danger: '#ff5252',
   warn: '#ffb74d',
 };
 
-const CELL_DEFAULT_FILL: Record<string, string> = {
+const DEFAULT_FILL: Record<string, string> = {
   door: '#c9a877',
   drawer: '#c9a877',
   glass: '#9fc3d8',
   panel: '#c2c6cc',
-  open: '#241c15',
 };
 
-function fillOf(cell: FacadeCell): string {
+function fillOf(cell: Cell): string {
   if (cell.fill) return FACADE_FILLS[cell.fill] ?? cell.fill;
-  return CELL_DEFAULT_FILL[cell.type] ?? '#999';
+  return DEFAULT_FILL[cell.facade ?? 'panel'] ?? '#999';
 }
 
 // ---------------------------------------------------------------- rendering
@@ -63,14 +69,15 @@ function applyViewBox(): void {
 }
 
 export function fitFacade(): void {
+  if (!svg) return;
   const p = store.project;
-  const r = svg?.getBoundingClientRect();
+  const r = svg.getBoundingClientRect();
   const total = totalElevationWidth(p);
   if (!r || !r.width) return;
   facadeView.zoom = Math.min(r.width / (total + 500), r.height / (p.ceiling + 420));
   facadeView.cx = total / 2;
   facadeView.cy = p.ceiling / 2 - 20;
-  if (svg) renderFacade();
+  renderFacade();
 }
 
 export function renderFacade(): void {
@@ -85,45 +92,36 @@ export function renderFacade(): void {
   const sel = ui.sel;
 
   const parts: string[] = [];
-  parts.push(
-    `<g font-family="ui-sans-serif, system-ui, sans-serif" text-rendering="geometricPrecision">`,
-  );
+  parts.push(`<g font-family="ui-sans-serif, system-ui, sans-serif">`);
 
-  // стены
   for (const w of WALLS) {
     const x0 = starts[w];
     const len = p.walls[w].length;
     const active = ui.wall === w;
     parts.push(
       `<rect data-hit="wall" data-wall="${w}" x="${x0 - 40}" y="-70" width="${len + 80}" height="${C + 130}" fill="${COL.plate}" stroke="${active ? COL.accent : COL.plateStroke}" stroke-width="2" vector-effect="non-scaling-stroke" rx="8"/>`,
-    );
-    parts.push(
       `<text x="${x0}" y="${-110}" font-size="60" fill="${active ? COL.accent : COL.dim}">${WALL_LABEL[w]} — ${len} мм</text>`,
-    );
-    // рифлёный пол-багет
-    parts.push(
       `<line x1="${x0}" y1="${fy(0)}" x2="${x0 + len}" y2="${fy(0)}" stroke="${COL.floor}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`,
     );
-    for (let t = 0; t <= len; t += 500) {
+    for (let t = 500; t < len; t += 500) {
       parts.push(
         `<line x1="${x0 + t}" y1="${fy(0)}" x2="${x0 + t}" y2="${fy(0) - 26}" stroke="${COL.tick}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`,
       );
-      if (t % 1000 === 0 && t > 0)
+      if (t % 1000 === 0)
         parts.push(
           `<text x="${x0 + t}" y="${fy(0) + 75}" font-size="46" fill="${COL.tick}" text-anchor="middle">${t}</text>`,
         );
     }
   }
 
-  // модули
   for (const w of WALLS) {
     const x0 = starts[w];
     for (const m of modulesOn(p, w)) {
-      parts.push(renderModule(p, m, x0, fy, errorIds.has(m.id), warnIds.has(m.id), sel?.kind === 'module' && sel.id === m.id));
+      const isSel = sel?.kind === 'module' && sel.id === m.id;
+      parts.push(renderModule(p, m, x0, fy, errorIds.has(m.id), isSel, isSel ? ui.cell : null));
     }
   }
 
-  // ТВ поверх фасадов (иначе не выбрать при конфликте)
   if (p.tv) {
     const t = p.tv;
     const x0 = starts[t.wall];
@@ -140,7 +138,6 @@ export function renderFacade(): void {
     );
   }
 
-  // розетки
   for (const s of p.sockets) {
     const x0 = starts[s.wall];
     const bad = warnIds.has(s.id) || errorIds.has(s.id);
@@ -156,7 +153,7 @@ export function renderFacade(): void {
     );
   }
 
-  // хендлы ресайза выбранного модуля (сверху всего)
+  // хендлы: синие — ширина модуля, жёлтые — границы секций
   if (sel?.kind === 'module') {
     const m = findModule(p, sel.id);
     if (m) {
@@ -166,12 +163,26 @@ export function renderFacade(): void {
         const hx = dir === 'l' ? x0 + m.from : x0 + m.from + m.w;
         parts.push(
           `<g data-hit="edge" data-id="${m.id}" data-dir="${dir}" style="cursor:col-resize">`,
-          `<rect x="${hx - 18}" y="${fy(m.h)}" width="36" height="${m.h}" fill="${COL.accent}" opacity="0.35"/>`,
-          `<rect x="${hx - 26}" y="${fy(m.h) + (m.h - hh) / 2}" width="52" height="${hh}" rx="14" fill="${COL.accent}"/>`,
-          `<line x1="${hx - 7}" y1="${fy(m.h) + m.h / 2 - 22}" x2="${hx - 7}" y2="${fy(m.h) + m.h / 2 + 22}" stroke="#0b1220" stroke-width="4"/>`,
-          `<line x1="${hx + 7}" y1="${fy(m.h) + m.h / 2 - 22}" x2="${hx + 7}" y2="${fy(m.h) + m.h / 2 + 22}" stroke="#0b1220" stroke-width="4"/>`,
+          `<rect x="${hx - 18}" y="${fy(m.h)}" width="36" height="${m.h}" fill="${COL.accent}" opacity="0.3"/>`,
+          `<rect x="${hx - 24}" y="${fy(m.h) + (m.h - hh) / 2}" width="48" height="${hh}" rx="14" fill="${COL.accent}"/>`,
+          `<line x1="${hx - 6}" y1="${fy(m.h) + m.h / 2 - 20}" x2="${hx - 6}" y2="${fy(m.h) + m.h / 2 + 20}" stroke="#0b1220" stroke-width="4"/>`,
+          `<line x1="${hx + 6}" y1="${fy(m.h) + m.h / 2 - 20}" x2="${hx + 6}" y2="${fy(m.h) + m.h / 2 + 20}" stroke="#0b1220" stroke-width="4"/>`,
           `</g>`,
         );
+      }
+      if (m.cells.length > 1) {
+        const layout = layoutCells(p, m);
+        for (let i = 0; i < layout.length - 1; i++) {
+          const hx = x0 + layout[i].x + layout[i].w;
+          parts.push(
+            `<g data-hit="cell-edge" data-id="${m.id}" data-idx="${i}" style="cursor:col-resize">`,
+            `<rect x="${hx - 16}" y="${fy(m.h)}" width="32" height="${m.h - p.base}" fill="${COL.cell}" opacity="0.22"/>`,
+            `<rect x="${hx - 20}" y="${fy(m.h) + (m.h - p.base - hh) / 2}" width="40" height="${hh}" rx="12" fill="${COL.cell}"/>`,
+            `<line x1="${hx - 5}" y1="${fy(m.h) + (m.h - p.base) / 2 - 18}" x2="${hx - 5}" y2="${fy(m.h) + (m.h - p.base) / 2 + 18}" stroke="#3a2c00" stroke-width="3.5"/>`,
+            `<line x1="${hx + 5}" y1="${fy(m.h) + (m.h - p.base) / 2 - 18}" x2="${hx + 5}" y2="${fy(m.h) + (m.h - p.base) / 2 + 18}" stroke="#3a2c00" stroke-width="3.5"/>`,
+            `</g>`,
+          );
+        }
       }
       parts.push(
         `<text x="${x0 + m.from + m.w / 2}" y="${fy(0) + 170}" font-size="58" fill="${COL.accent}" text-anchor="middle">${m.w} × ${m.h} × ${m.depth}</text>`,
@@ -190,79 +201,107 @@ function renderModule(
   x0: number,
   fy: (y: number) => number,
   hasError: boolean,
-  hasWarn: boolean,
   isSel: boolean,
+  selCell: number | null,
 ): string {
   const X = x0 + m.from;
   const Y = fy(m.h);
+  const bodyH = m.h - p.base;
+  const T = CARCASS_T;
   const out: string[] = [];
   out.push(
-    `<g data-hit="mod" data-id="${m.id}" data-wall="${m.wall}" style="cursor:grab" opacity="${isSel ? 1 : 0.97}">`,
+    `<g data-hit="mod" data-id="${m.id}" data-wall="${m.wall}" style="cursor:grab">`,
     `<title>${KIND_LABEL[m.kind]} · ${m.w}×${m.h}×${m.depth} мм</title>`,
-    // корпус
-    `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="${COL.body}"/>`,
+    // корпус: боковины/верх/низ + тёмное нутро
+    `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="${COL.carcass}"/>`,
+    `<rect x="${X + T / 2}" y="${Y + T / 2}" width="${Math.max(0, m.w - T)}" height="${Math.max(0, bodyH - T / 2)}" fill="${COL.interior}"/>`,
   );
-  // плинтус
+
+  const layout = layoutCells(p, m);
+  for (const cl of layout) {
+    const cx = X + cl.x;
+    const cw = cl.w;
+    const open = cl.cell.facade === null;
+    out.push(`<g data-hit="cell" data-id="${m.id}" data-idx="${cl.index}" style="cursor:pointer">`);
+    out.push(
+      `<title>Секция ${cl.index + 1}: ${cl.cell.facade ?? 'открытая'}, ${Math.round(cl.cell.w)} мм</title>`,
+    );
+    if (open) {
+      // полки
+      for (const y of shelfYs(m, p, cl.cell)) {
+        out.push(
+          `<rect x="${cx + T / 2}" y="${fy(y) - 8}" width="${Math.max(0, cw - T)}" height="16" fill="${COL.shelf}" stroke="#00000044" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+        );
+      }
+    } else {
+      const f = fillOf(cl.cell);
+      const kind = cl.cell.facade as string;
+      out.push(
+        `<rect x="${cx}" y="${Y}" width="${cw}" height="${bodyH}" fill="${f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+      );
+      if (kind === 'door') {
+        const hingeLeft = cl.cell.hinge !== 'right';
+        const hx = hingeLeft ? cx + 8 : cx + cw - 8;
+        const gx = hingeLeft ? cx + cw - 42 : cx + 42;
+        out.push(
+          `<line x1="${hx}" y1="${Y + 12}" x2="${hx}" y2="${Y + bodyH - 12}" stroke="#00000044" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
+          `<rect x="${gx - 6}" y="${Y + bodyH / 2 - 110}" width="12" height="220" rx="6" fill="#2f2620"/>`,
+        );
+      } else if (kind === 'drawer') {
+        const n = Math.max(1, Math.round(cl.cell.drawers));
+        const dh = bodyH / n;
+        for (let d = 1; d < n; d++) {
+          out.push(
+            `<line x1="${cx + 6}" y1="${Y + dh * d}" x2="${cx + cw - 6}" y2="${Y + dh * d}" stroke="#00000066" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`,
+          );
+        }
+        for (let d = 0; d < n; d++) {
+          out.push(
+            `<line x1="${cx + cw * 0.3}" y1="${Y + dh * (d + 0.5)}" x2="${cx + cw * 0.7}" y2="${Y + dh * (d + 0.5)}" stroke="#2f2620" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`,
+          );
+        }
+      } else if (kind === 'glass') {
+        out.push(
+          `<line x1="${cx + cw * 0.15}" y1="${Y + bodyH * 0.85}" x2="${cx + cw * 0.6}" y2="${Y + bodyH * 0.15}" stroke="#ffffff55" stroke-width="3" vector-effect="non-scaling-stroke"/>`,
+        );
+      }
+    }
+    if (isSel && selCell === cl.index) {
+      out.push(
+        `<rect x="${cx + 2}" y="${Y + 2}" width="${Math.max(0, cw - 4)}" height="${bodyH - 4}" fill="none" stroke="${COL.cell}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`,
+      );
+    }
+    out.push(`</g>`);
+  }
+
+  // перегородки между секциями (поверх нутра, под выделяющей обводкой)
+  for (let i = 1; i < layout.length; i++) {
+    const bx = X + layout[i].x;
+    out.push(
+      `<rect x="${bx - T / 2}" y="${Y + T / 2}" width="${T}" height="${bodyH - T / 2}" fill="${COL.partition}"/>`,
+    );
+  }
+
   if (p.base > 0)
     out.push(
       `<rect x="${X + 24}" y="${fy(p.base)}" width="${Math.max(0, m.w - 48)}" height="${p.base}" fill="${COL.plinth}"/>`,
     );
-  // фасад
-  for (const row of layoutFacade(p, m)) {
-    for (const c of row.cells) {
-      const cell = c.cell;
-      const cx = X + c.x;
-      const cy = fy(row.y + row.h);
-      const f = fillOf(cell);
-      out.push(
-        `<rect x="${cx}" y="${cy}" width="${c.w}" height="${row.h}" fill="${f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
-      );
-      if (cell.type === 'open') {
-        for (let sy = row.y + 350; sy < row.y + row.h - 40; sy += 350) {
-          out.push(
-            `<line x1="${cx + 8}" y1="${fy(sy)}" x2="${cx + c.w - 8}" y2="${fy(sy)}" stroke="#00000055" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`,
-          );
-        }
-      }
-      if (cell.type === 'door') {
-        const hingeLeft = cell.hinge !== 'right';
-        const hx = hingeLeft ? cx + 10 : cx + c.w - 10;
-        const gx = hingeLeft ? cx + c.w - 40 : cx + 40;
-        out.push(
-          `<line x1="${hx}" y1="${cy + 14}" x2="${hx}" y2="${cy + row.h - 14}" stroke="#00000044" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
-          `<rect x="${gx - 6}" y="${cy + row.h / 2 - 110}" width="12" height="220" rx="6" fill="#2f2620"/>`,
-        );
-      }
-      if (cell.type === 'drawer') {
-        out.push(
-          `<line x1="${cx + c.w * 0.3}" y1="${cy + row.h / 2}" x2="${cx + c.w * 0.7}" y2="${cy + row.h / 2}" stroke="#2f2620" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`,
-        );
-      }
-      if (cell.type === 'glass') {
-        out.push(
-          `<line x1="${cx + c.w * 0.15}" y1="${cy + row.h * 0.85}" x2="${cx + c.w * 0.6}" y2="${cy + row.h * 0.15}" stroke="#ffffff55" stroke-width="3" vector-effect="non-scaling-stroke"/>`,
-        );
-      }
-    }
-  }
-  // габаритная линия
+
   out.push(
     `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="none" stroke="${hasError ? COL.danger : isSel ? COL.accent : '#00000088'}" stroke-width="${hasError || isSel ? 2.5 : 1.5}" vector-effect="non-scaling-stroke"/>`,
+    `</g>`,
   );
-  if (hasWarn && !hasError)
-    out.push(
-      `<circle cx="${X + m.w - 34}" cy="${Y + 40}" r="16" fill="${COL.warn}"/>`,
-    );
-  out.push(`</g>`);
   return out.join('');
 }
 
 // ---------------------------------------------------------------- interaction
 
 interface DragState {
-  mode: 'move' | 'edge' | 'tv' | 'socket' | 'pan';
+  mode: 'move' | 'edge' | 'cell-edge' | 'tv' | 'socket' | 'pan';
   id?: string;
   dir?: 'l' | 'r';
+  idx?: number;
+  wall?: 'left' | 'center' | 'right';
   startMmX: number;
   startMmY: number;
   lastClientX: number;
@@ -287,8 +326,8 @@ function toMm(e: MouseEvent): { x: number; y: number } {
   };
 }
 
-function floorY(e: MouseEvent): number {
-  return store.project.ceiling - toMm(e).y;
+function floorY(mm: { x: number; y: number }): number {
+  return store.project.ceiling - mm.y;
 }
 
 export function attachFacade(el: SVGSVGElement): void {
@@ -319,7 +358,31 @@ export function attachFacade(el: SVGSVGElement): void {
       if (m) {
         select({ kind: 'module', id });
         ui.wall = m.wall;
-        drag = { ...base, mode: 'edge', id, dir: (target.getAttribute('data-dir') as 'l' | 'r') ?? 'r', origFrom: m.from, origW: m.w, needCp: true };
+        drag = {
+          ...base,
+          mode: 'edge',
+          id,
+          dir: (target.getAttribute('data-dir') as 'l' | 'r') ?? 'r',
+          origFrom: m.from,
+          origW: m.w,
+          needCp: true,
+        };
+      }
+    } else if (hit === 'cell-edge' && target) {
+      const id = target.getAttribute('data-id') ?? '';
+      const idx = Number(target.getAttribute('data-idx'));
+      const m = findModule(store.project, id);
+      if (m && Number.isFinite(idx)) {
+        drag = { ...base, mode: 'cell-edge', id, idx, wall: m.wall, needCp: true };
+      }
+    } else if (hit === 'cell' && target) {
+      const id = target.getAttribute('data-id') ?? '';
+      const idx = Number(target.getAttribute('data-idx'));
+      const m = findModule(store.project, id);
+      if (m) {
+        select({ kind: 'module', id }, Number.isFinite(idx) ? idx : null);
+        ui.wall = m.wall;
+        drag = { ...base, mode: 'move', id, origFrom: m.from, origW: m.w, needCp: true };
       }
     } else if (hit === 'mod' && target) {
       const id = target.getAttribute('data-id') ?? '';
@@ -347,7 +410,7 @@ export function attachFacade(el: SVGSVGElement): void {
         const w = target.getAttribute('data-wall');
         if (w === 'left' || w === 'center' || w === 'right') ui.wall = w;
       }
-      drag = { ...base, mode: e.button === 1 ? 'pan' : base.mode };
+      drag = base;
     }
     renderAll();
   });
@@ -357,8 +420,7 @@ export function attachFacade(el: SVGSVGElement): void {
     if (drag.mode === 'pan') {
       const dxPx = e.clientX - drag.lastClientX;
       const dyPx = e.clientY - drag.lastClientY;
-      if (Math.abs(e.clientX - drag.lastClientX) + Math.abs(e.clientY - drag.lastClientY) > 2)
-        drag.moved = true;
+      if (Math.abs(dxPx) + Math.abs(dyPx) > 2) drag.moved = true;
       facadeView.cx -= dxPx / facadeView.zoom;
       facadeView.cy -= dyPx / facadeView.zoom;
       drag.lastClientX = e.clientX;
@@ -373,11 +435,18 @@ export function attachFacade(el: SVGSVGElement): void {
     }
     const mm = toMm(e);
     const dx = mm.x - drag.startMmX;
-    const dy = -(mm.y - drag.startMmY); // инвертируем y: вверх положительные мм
+    const dy = -(mm.y - drag.startMmY);
     if (drag.mode === 'move' && drag.id) moveModule(drag.id, drag.origFrom + dx);
     else if (drag.mode === 'edge' && drag.id && drag.dir)
-      resizeModule(drag.id, drag.dir, drag.dir === 'l' ? drag.origFrom + dx : drag.origFrom + drag.origW + dx);
-    else if (drag.mode === 'tv') moveTv(drag.origCx + dx, drag.origCy + dy);
+      resizeModule(
+        drag.id,
+        drag.dir,
+        drag.dir === 'l' ? drag.origFrom + dx : drag.origFrom + drag.origW + dx,
+      );
+    else if (drag.mode === 'cell-edge' && drag.id && drag.wall && drag.idx !== undefined) {
+      const local = mm.x - wallStart(store.project)[drag.wall];
+      dragCellBoundary(drag.id, drag.idx, local);
+    } else if (drag.mode === 'tv') moveTv(drag.origCx + dx, drag.origCy + dy);
     else if (drag.mode === 'socket' && drag.id) moveSocket(drag.id, drag.origCx + dx, drag.origCy + dy);
   });
 
@@ -406,11 +475,12 @@ export function attachFacade(el: SVGSVGElement): void {
     const target = (e.target as Element).closest('[data-hit]');
     const hit = target?.getAttribute('data-hit') ?? null;
     const mm = toMm(e);
-    if (hit === 'mod' && target) {
-      const w = target.getAttribute('data-wall') as 'left' | 'center' | 'right' | null;
-      if (!w) return;
-      const local = mm.x - wallStart(store.project)[w];
-      cycleCellType(target.getAttribute('data-id') ?? '', local, floorY(e));
+    if (hit === 'cell' && target) {
+      const id = target.getAttribute('data-id') ?? '';
+      const m = findModule(store.project, id);
+      if (!m) return;
+      const local = mm.x - wallStart(store.project)[m.wall];
+      toggleCellFacade(id, local, floorY(mm));
     } else if (hit === 'wall') {
       const at = wallAtX(store.project, mm.x);
       if (at) insertModuleAtPointer('wardrobe', at.wall, at.local);

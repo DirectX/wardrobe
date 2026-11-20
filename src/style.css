@@ -268,3 +268,12 @@ select:focus {
 .msg {
   color: var(--warn);
 }
+
+.facade-row.sel {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+.facade-row .field {
+  grid-column: span 1;
+}

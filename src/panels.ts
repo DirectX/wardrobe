@@ -1,24 +1,28 @@
 import { store } from './store.ts';
 import { select, ui, renderAll } from './state.ts';
 import {
+  addCell,
   addModule,
   deleteSelected,
   duplicateModule,
   makeNicheUnderTv,
+  removeCell,
+  setCellWidth,
+  setModuleKind,
+  splitCell,
 } from './edit.ts';
 import {
-  CELL_LABEL,
   FACADE_FILLS,
+  FACADE_LABEL,
   KIND_LABEL,
   WALL_LABEL,
-  defaultFacade,
   defaultProject,
 } from './defaults.ts';
-import { WALLS } from './geometry.ts';
+import { WALLS, cellsSum, shelfCount } from './geometry.ts';
 import { validate } from './validate.ts';
 import { fitFacade } from './views/facade.ts';
 import { openJson, exportPng, saveJson } from './io.ts';
-import type { CellType, FacadeRow, ModuleKind, SocketSpec, TvSpec, WallId, WardModule } from './types.ts';
+import type { Cell, FacadeKind, ModuleKind, Project, SocketSpec, TvSpec, WallId, WardModule } from './types.ts';
 
 // ------------------------------------------------------------------ helpers
 
@@ -45,9 +49,7 @@ function btn(label: string, onclick: () => void, title?: string): HTMLButtonElem
 
 function guardInput(el: HTMLElement): void {
   el.addEventListener('focusin', () => (ui.editing = true));
-  el.addEventListener('focusout', () => {
-    ui.editing = false;
-  });
+  el.addEventListener('focusout', () => (ui.editing = false));
 }
 
 function fieldNum(
@@ -61,6 +63,32 @@ function fieldNum(
   input.addEventListener('change', () => {
     const v = Number(input.valueAsNumber);
     if (Number.isFinite(v)) onCommit(v);
+  });
+  return h('label', { class: 'field' }, h('span', {}, label), input);
+}
+
+/** Числовое поле, допускающее пустое значение (пусто = null). */
+function fieldNumOpt(
+  label: string,
+  value: number | null,
+  placeholder: string,
+  onCommit: (v: number | null) => void,
+  extra: Record<string, string | number | undefined> = {},
+): HTMLElement {
+  const input = h('input', {
+    type: 'number',
+    value: value === null ? '' : String(value),
+    step: '10',
+    placeholder,
+    ...extra,
+  });
+  guardInput(input);
+  input.addEventListener('change', () => {
+    if (input.value === '') onCommit(null);
+    else {
+      const v = Number(input.valueAsNumber);
+      if (Number.isFinite(v)) onCommit(v);
+    }
   });
   return h('label', { class: 'field' }, h('span', {}, label), input);
 }
@@ -192,11 +220,6 @@ export function initToolbar(root: HTMLElement): void {
   );
 }
 
-export function syncToolbar(): void {
-  // значения length-полей синхронизируем только если фокус не на них
-  // (упрощение: toolbar пересобираем лишь при явной смене габаритов через кнопки)
-}
-
 // ------------------------------------------------------------------ library
 
 export function renderLibrary(root: HTMLElement): void {
@@ -211,16 +234,16 @@ export function renderLibrary(root: HTMLElement): void {
     if (ui.wall === w) b.classList.add('active');
     seg.append(b);
   }
-  root.append(
-    h('h3', {}, 'Модули'),
-    h('div', { class: 'hint' }, 'Добавить на стену:'),
-    seg,
-  );
+  root.append(h('h3', {}, 'Модули'), h('div', { class: 'hint' }, 'Добавить на стену:'), seg);
   for (const k of kinds) {
     root.append(btn(KIND_LABEL[k], () => addModule(k, ui.wall), `На стену: ${WALL_LABEL[ui.wall]}`));
   }
   root.append(
-    h('div', { class: 'hint pad-top' }, 'Двойной клик по стене — шкаф-купе в этом месте; двойной клик по фасаду — сменить тип ячейки.'),
+    h(
+      'div',
+      { class: 'hint pad-top' },
+      'Клик по секции — выбрать; жёлтые ручки — делить ширину между секциями; двойной клик по секции — вкл/выкл фасад; двойной клик по стене — шкаф в этом месте.',
+    ),
   );
 }
 
@@ -241,112 +264,14 @@ export function renderProps(root: HTMLElement): void {
         `Стен: 3 · Модулей: ${p.modules.length} · Розеток: ${p.sockets.length}`,
         h('br'),
         h('br'),
-        'Кликните модуль, ТВ или розетку. Перетаскивание — перемещение, синие ручки по краям — ширина.',
+        'Кликните модуль, ТВ или розетку. Перетаскивание — перемещение, синие ручки — ширина модуля, жёлтые — границы секций.',
       ),
     );
     return;
   }
 
   if (sel.kind === 'module') {
-    const m = p.modules.find((x) => x.id === sel.id);
-    if (!m) return;
-    root.append(h('h4', {}, KIND_LABEL[m.kind]));
-    const patch = (fn: (mm: WardModule) => void) =>
-      store.update((pp) => {
-        const t = pp.modules.find((x) => x.id === m.id);
-        if (t) fn(t);
-      });
-
-    root.append(
-      fieldSelect(
-        'Стена',
-        m.wall,
-        WALLS.map((w): [string, string] => [w, WALL_LABEL[w]]),
-        (v) =>
-          patch((t) => {
-            t.wall = v as WallId;
-            t.from = Math.min(t.from, p.walls[v as WallId].length - t.w);
-          }),
-      ),
-      fieldNum('Отступ, мм', m.from, (v) => patch((t) => (t.from = Math.max(0, v)))),
-      fieldNum('Ширина, мм', m.w, (v) => patch((t) => (t.w = Math.max(150, v)))),
-      fieldNum('Высота, мм', m.h, (v) => patch((t) => (t.h = Math.max(200, Math.min(p.ceiling, v))))),
-      fieldNum('Глубина, мм', m.depth, (v) => patch((t) => (t.depth = Math.max(150, v)))),
-      h(
-        'div',
-        { class: 'row' },
-        btn('↑ Под потолок', () => patch((t) => (t.h = p.ceiling))),
-        btn('⧉ Дублировать', () => duplicateModule(m.id)),
-        btn('✕ Удалить', () => deleteSelected()),
-      ),
-    );
-
-    root.append(h('h4', {}, 'Фасад'));
-    const patchFacade = (fn: (rows: FacadeRow[]) => void) =>
-      store.update((pp) => {
-        const t = pp.modules.find((x) => x.id === m.id);
-        if (t) fn(t.facade);
-      });
-
-    m.facade.forEach((row, ri) => {
-      const rowBox = h('div', { class: 'facade-row' });
-      rowBox.append(
-        h('span', { class: 'row-label' }, `Ряд ${ri + 1}`),
-        fieldNum('вес', row.weight, (v) =>
-          patchFacade((rows) => (rows[ri].weight = Math.min(5, Math.max(0.2, v)))),
-          { step: '0.5', class: 'tiny' },
-        ),
-        btn('+', () => patchFacade((rows) => rows[ri].cells.push({ type: 'door' })), 'Добавить ячейку'),
-        btn('−', () =>
-          patchFacade((rows) => {
-            if (rows[ri].cells.length > 1) rows[ri].cells.pop();
-            else if (rows.length > 1) rows.splice(ri, 1);
-          }), 'Убрать ячейку/ряд'),
-      );
-      row.cells.forEach((_, ci) => {
-        const cell = row.cells[ci];
-        rowBox.append(
-          fieldSelect(
-            `Яч. ${ci + 1}`,
-            cell.type,
-            (Object.keys(CELL_LABEL) as CellType[]).map((t): [string, string] => [t, CELL_LABEL[t]]),
-            (v) => patchFacade((rows) => (rows[ri].cells[ci].type = v as CellType)),
-          ),
-        );
-        if (cell.type === 'door') {
-          rowBox.append(
-            fieldSelect(
-              'петля',
-              cell.hinge ?? 'left',
-              [
-                ['left', 'Лев.'],
-                ['right', 'Прав.'],
-              ],
-              (v) => patchFacade((rows) => (rows[ri].cells[ci].hinge = v as 'left' | 'right')),
-            ),
-          );
-        }
-        rowBox.append(
-          fieldSelect(
-            'цвет',
-            cell.fill ?? '',
-            [['', '—'], ...Object.keys(FACADE_FILLS).map((k) => [k, k] as [string, string])],
-            (v) => patchFacade((rows) => (rows[ri].cells[ci].fill = v || undefined)),
-          ),
-        );
-      });
-      root.append(rowBox);
-    });
-    root.append(
-      h(
-        'div',
-        { class: 'row' },
-        btn('+ ряд', () => patchFacade((rows) => rows.push({ weight: 1, cells: [{ type: 'door' }] }))),
-        btn('сброс фасада', () =>
-          patch((t) => (t.facade = defaultFacade(t.kind, t.w, t.h))),
-        ),
-      ),
-    );
+    renderModuleProps(root, p, sel.id);
     return;
   }
 
@@ -371,7 +296,7 @@ export function renderProps(root: HTMLElement): void {
       h(
         'div',
         { class: 'row' },
-        btn('Ниша под ТВ', () => makeNicheUnderTv(), 'Освободить место и сделать открытую нишу'),
+        btn('Ниша под ТВ', () => makeNicheUnderTv(), 'Освободить место и сделать открытую секцию'),
         btn('✕ Убрать ТВ', () => deleteSelected()),
       ),
     );
@@ -401,6 +326,167 @@ export function renderProps(root: HTMLElement): void {
   }
 }
 
+function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
+  const m = p.modules.find((x) => x.id === id);
+  if (!m) return;
+  root.append(h('h4', {}, KIND_LABEL[m.kind]));
+
+  const patch = (fn: (mm: WardModule) => void) =>
+    store.update((pp) => {
+      const t = pp.modules.find((x) => x.id === m.id);
+      if (t) fn(t);
+    });
+  const setCell = (idx: number, fn: (cell: Cell) => void) =>
+    store.update((pp) => {
+      const t = pp.modules.find((x) => x.id === m.id);
+      const c = t?.cells[idx];
+      if (c) fn(c);
+    });
+
+  root.append(
+    fieldSelect(
+      'Стена',
+      m.wall,
+      WALLS.map((w): [string, string] => [w, WALL_LABEL[w]]),
+      (v) =>
+        patch((t) => {
+          t.wall = v as WallId;
+          t.from = Math.min(t.from, p.walls[v as WallId].length - t.w);
+        }),
+    ),
+    fieldSelect(
+      'Тип',
+      m.kind,
+      (Object.keys(KIND_LABEL) as ModuleKind[]).map((k): [string, string] => [k, KIND_LABEL[k]]),
+      (v) => setModuleKind(m.id, v as ModuleKind),
+    ),
+    fieldNum('Отступ, мм', m.from, (v) => patch((t) => (t.from = Math.max(0, v)))),
+    fieldNum('Ширина, мм', m.w, (v) => {
+      const w = Math.max(200, v);
+      patch((t) => {
+        t.w = w;
+        for (const c of t.cells) c.w = Math.round(w / t.cells.length);
+        const drift = w - cellsSum(t);
+        t.cells[t.cells.length - 1].w += drift;
+      });
+    }),
+    fieldNum('Высота, мм', m.h, (v) => patch((t) => (t.h = Math.max(200, Math.min(p.ceiling, v))))),
+    fieldNum('Глубина, мм', m.depth, (v) => patch((t) => (t.depth = Math.max(150, v)))),
+    h(
+      'div',
+      { class: 'row' },
+      btn('↑ Под потолок', () => patch((t) => (t.h = p.ceiling))),
+      btn('⧉ Дублировать', () => duplicateModule(m.id)),
+      btn('✕ Удалить', () => deleteSelected()),
+    ),
+  );
+
+  root.append(h('h4', {}, `Секции (${m.cells.length})`));
+  m.cells.forEach((cell, idx) => {
+    const box = h('div', { class: 'facade-row' + (ui.cell === idx ? ' sel' : '') });
+    box.addEventListener('click', () => {
+      ui.cell = idx;
+      renderAll();
+    });
+    const open = cell.facade === null;
+    box.append(
+      h(
+        'span',
+        { class: 'row-label' },
+        `Секция ${idx + 1} · ${open ? 'открытая' : FACADE_LABEL[cell.facade as FacadeKind]}${
+          open ? `, полок: ${shelfCount(m, p, cell)}` : ''
+        }`,
+      ),
+      fieldNum('ширина', cell.w, (v) => setCellWidth(m.id, idx, v)),
+      fieldSelect(
+        'фасад',
+        cell.facade ?? 'none',
+        [
+          ['none', 'нет'],
+          ...(Object.keys(FACADE_LABEL) as FacadeKind[]).map(
+            (k): [string, string] => [k, FACADE_LABEL[k]],
+          ),
+        ],
+        (v) => setCell(idx, (c) => (c.facade = v === 'none' ? null : (v as FacadeKind))),
+      ),
+    );
+    if (cell.facade === 'door') {
+      box.append(
+        fieldSelect(
+          'петля',
+          cell.hinge,
+          [
+            ['left', 'Лев.'],
+            ['right', 'Прав.'],
+          ],
+          (v) => setCell(idx, (c) => (c.hinge = v as 'left' | 'right')),
+        ),
+      );
+    }
+    if (cell.facade === 'drawer') {
+      box.append(
+        fieldNum('ящиков', cell.drawers, (v) =>
+          setCell(idx, (c) => (c.drawers = Math.max(1, Math.min(12, Math.round(v))))),
+        ),
+      );
+    }
+    if (cell.facade === null) {
+      if (cell.shelfPitch) {
+        box.append(
+          fieldNumOpt(
+            'полка, мм',
+            cell.shelfPitch,
+            '—',
+            (v) => setCell(idx, (c) => (c.shelfPitch = v && v > 0 ? v : null)),
+            { class: 'tiny' },
+          ),
+        );
+      } else {
+        box.append(
+          fieldNum('полок', shelfCount(m, p, cell), (v) =>
+            setCell(idx, (c) => {
+              c.shelves = Math.max(0, Math.min(20, Math.round(v)));
+              c.shelfPitch = null;
+            }),
+          ),
+        );
+        box.append(
+          fieldNumOpt(
+            'полка, мм',
+            null,
+            'по высоте',
+            (v) => setCell(idx, (c) => (c.shelfPitch = v && v > 0 ? v : null)),
+            { class: 'tiny' },
+          ),
+        );
+      }
+    }
+    box.append(
+      fieldSelect(
+        'цвет',
+        cell.fill ?? '',
+        [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
+        (v) => setCell(idx, (c) => (c.fill = v || undefined)),
+      ),
+      btn('⇄', () => splitCell(m.id, idx), 'Разделить пополам'),
+      btn('✕', () => removeCell(m.id, idx), 'Удалить секцию (ширина соседу)'),
+    );
+    root.append(box);
+  });
+  root.append(
+    h(
+      'div',
+      { class: 'row' },
+      btn('+ секция', () => addCell(m.id), 'Добавить, разделив самую широкую'),
+      h(
+        'span',
+        { class: cellsSum(m) === m.w ? 'hint' : 'issue error' },
+        `Σ ${cellsSum(m)} / ${m.w} мм`,
+      ),
+    ),
+  );
+}
+
 // ------------------------------------------------------------------ status
 
 function refToSelection(ref: string): 'module' | 'tv' | 'socket' | null {
@@ -421,7 +507,13 @@ export function renderStatus(root: HTMLElement): void {
     return;
   }
   if (!issues.length) {
-    root.append(h('span', { class: 'ok' }, '✓ замечаний нет · перетаскивайте модули, тягайте за синие ручки, двойной клик по стене — добавить шкаф'));
+    root.append(
+      h(
+        'span',
+        { class: 'ok' },
+        '✓ замечаний нет · клик по секции — выбрать, жёлтые ручки — ширины секций, двойной клик по секции — фасад вкл/выкл',
+      ),
+    );
     return;
   }
   const counts = { error: 0, warn: 0 };

@@ -1,8 +1,10 @@
-import type { FacadeCell, FacadeRow, Project, WallId, WardModule } from './types.ts';
+import type { Cell, FacadeKind, Project, WallId, WardModule } from './types.ts';
 
 export const WALLS: WallId[] = ['left', 'center', 'right'];
 /** визуальный зазор между раскрытыми фасадами стен, мм */
 export const WALL_GAP = 180;
+/** толщина корпуса/перегородки, мм (визуально) */
+export const CARCASS_T = 18;
 
 export function wallStart(p: Project): Record<WallId, number> {
   const center = p.walls.left.length + WALL_GAP;
@@ -49,87 +51,111 @@ export function findModule(p: Project, id: string): WardModule | undefined {
   return p.modules.find((m) => m.id === id);
 }
 
-export interface LaidCell {
+// ------------------------------------------------------------------ ячейки
+
+export interface CellLayout {
+  index: number;
+  /** левый край внутри стены, мм */
   x: number;
   w: number;
-  cell: FacadeCell;
+  cell: Cell;
 }
 
-export interface LaidRow {
-  /** низ ряда, мм от пола */
-  y: number;
-  h: number;
-  cells: LaidCell[];
+/**
+ * Разложить ячейки модуля вдоль стены.
+ * Ширина рисуется с масштабированием, чтобы расхождение сумм не ломало картинку
+ * (расхождение ловит валидатор).
+ */
+export function layoutCells(p: Project, m: WardModule): CellLayout[] {
+  void p;
+  const sum = m.cells.reduce((s, c) => s + Math.max(0, c.w), 0) || 1;
+  const scale = m.w / sum;
+  let x = m.from;
+  return m.cells.map((cell, index) => {
+    const w = Math.max(0, cell.w) * scale;
+    const l = { index, x, w, cell };
+    x += w;
+    return l;
+  });
 }
 
-/** Разложить фасад модуля по рядам и ячейкам (координаты вдоль стены). */
-export function layoutFacade(p: Project, m: WardModule): LaidRow[] {
-  const rows: FacadeRow[] = m.facade.length ? m.facade : [{ weight: 1, cells: [{ type: 'open' }] }];
-  const areaH = Math.max(1, m.h - p.base);
-  const totalW = rows.reduce((s, r) => s + (r.weight > 0 ? r.weight : 0), 0) || 1;
-  let acc = m.h; // идём сверху вниз
-  const out: LaidRow[] = [];
-  for (const r of rows) {
-    const rh = (areaH * (r.weight > 0 ? r.weight : 0)) / totalW;
-    const y = acc - rh;
-    const n = Math.max(1, r.cells.length);
-    const cw = m.w / n;
-    out.push({
-      y,
-      h: rh,
-      cells: r.cells.map((cell, i) => ({ x: m.from + i * cw, w: cw, cell })),
-    });
-    acc = y;
+export function cellsSum(m: WardModule): number {
+  return m.cells.reduce((s, c) => s + c.w, 0);
+}
+
+export function isCellOpen(cell: Cell): boolean {
+  return cell.facade === null;
+}
+
+export const PARTITION = CARCASS_T / 2; // перегородка между ячейками пополам от соседей
+
+/** Число полок в открытой секции (для отрисовки и подсказок). */
+export function shelfCount(m: WardModule, p: Project, cell: Cell): number {
+  const bottom = p.base + CARCASS_T;
+  const top = m.h - CARCASS_T;
+  const avail = Math.max(0, top - bottom);
+  if (cell.shelfPitch && cell.shelfPitch > 0) return Math.max(0, Math.floor(avail / cell.shelfPitch));
+  return Math.max(0, Math.round(cell.shelves));
+}
+
+/** Высоты полок от пола, мм (в координатах стены). */
+export function shelfYs(m: WardModule, p: Project, cell: Cell): number[] {
+  const bottom = p.base + CARCASS_T;
+  const top = m.h - CARCASS_T;
+  const ys: number[] = [];
+  if (top - bottom <= 0) return ys;
+  if (cell.shelfPitch && cell.shelfPitch > 0) {
+    for (let y = bottom + cell.shelfPitch; y < top; y += cell.shelfPitch) ys.push(y);
+    return ys;
   }
-  return out;
+  const n = Math.max(0, Math.round(cell.shelves));
+  for (let i = 1; i <= n; i++) ys.push(bottom + ((top - bottom) * i) / (n + 1));
+  return ys;
 }
 
-/** Найти тип ячейки фасада в точке (x вдоль стены, y от пола). null — вне модуля. */
-export function cellAt(p: Project, m: WardModule, x: number, y: number): FacadeCell | null {
-  if (x < m.from || x > m.from + m.w || y < 0 || y > m.h) return null;
-  if (y < p.base) return { type: 'panel' }; // плинтус закрыт
-  for (const row of layoutFacade(p, m)) {
-    if (y >= row.y && y <= row.y + row.h) {
-      for (const c of row.cells) {
-        if (x >= c.x && x <= c.x + c.w) return c.cell;
-      }
-    }
+/** Найти ячейку модуля в точке (x вдоль стены, y от пола); null — вне корпуса. */
+export function cellAt(p: Project, m: WardModule, x: number, y: number): Cell | null {
+  if (x < m.from || x > m.from + m.w || y < p.base || y > m.h) return null;
+  for (const cl of layoutCells(p, m)) {
+    if (x >= cl.x && x <= cl.x + cl.w) return cl.cell;
   }
   return null;
 }
 
-/** Сдвинуть все модули стены правее `after`, устраняя наложения. */
-export function packRight(p: Project, wall: WallId, after: WardModule): void {
-  const ms = modulesOn(p, wall);
-  const i = ms.findIndex((m) => m.id === after.id);
-  let prevEnd = wallEnd(after);
-  for (let j = i + 1; j < ms.length; j++) {
-    const m = ms[j];
-    if (m.from < prevEnd) m.from = prevEnd;
-    prevEnd = wallEnd(m);
+/** Индекс ячейки в той же точке (или -1). */
+export function cellIndexAt(p: Project, m: WardModule, x: number, y: number): number {
+  if (x < m.from || x > m.from + m.w || y < p.base || y > m.h) return -1;
+  for (const cl of layoutCells(p, m)) {
+    if (x >= cl.x && x <= cl.x + cl.w) return cl.index;
   }
+  return -1;
+}
+
+// ------------------------------------------------------------------ packing
+
+export interface FacadeRowV1 {
+  weight: number;
+  cells: { type: string; hinge?: 'left' | 'right'; fill?: string }[];
 }
 
 /**
  * Расставить модули стены вокруг anchor: толкаем соседей влево и вправо.
- * @returns false, если втиснуть не удалось (цепочка вылезает за стену) — состояние не изменять нельзя,
- * поэтому вызывающий должен работать на «черновике» и откатывать при false.
+ * @returns false, если втиснуть не удалось.
  */
 export function resolveAround(p: Project, wall: WallId, anchor: WardModule): boolean {
-  const ms = modulesOn(p, wall).slice().sort(
-    (a, b) =>
-      a.from - b.from ||
-      (a.id === anchor.id ? -1 : b.id === anchor.id ? 1 : 0),
-  );
+  const ms = modulesOn(p, wall)
+    .slice()
+    .sort(
+      (a, b) =>
+        a.from - b.from || (a.id === anchor.id ? -1 : b.id === anchor.id ? 1 : 0),
+    );
   const i = ms.findIndex((m) => m.id === anchor.id);
-  // вправо
   let bound = wallEnd(anchor);
   for (let j = i + 1; j < ms.length; j++) {
     const m = ms[j];
     if (m.from < bound) m.from = bound;
     bound = wallEnd(m);
   }
-  // влево
   bound = anchor.from;
   for (let j = i - 1; j >= 0; j--) {
     const m = ms[j];
@@ -138,3 +164,30 @@ export function resolveAround(p: Project, wall: WallId, anchor: WardModule): boo
   }
   return ms.every((m) => m.from >= -0.5 && wallEnd(m) <= p.walls[wall].length + 0.5);
 }
+
+/** Пропорционально пересчитать ширины ячеек под новую ширину модуля. */
+export function rescaleCells(m: WardModule, newW: number): void {
+  const n = m.cells.length;
+  if (!n) return;
+  const old = m.cells.map((c) => Math.max(0, c.w));
+  const sum = old.reduce((s, v) => s + v, 0);
+  if (sum <= 0 || n === 1) {
+    m.cells.forEach((c) => (c.w = newW));
+    return;
+  }
+  let acc = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const w = Math.max(100, Math.round((newW * old[i]) / sum));
+    m.cells[i].w = w;
+    acc += w;
+  }
+  const last = newW - acc;
+  if (last >= 100) m.cells[n - 1].w = last;
+  else {
+    const even = Math.floor(newW / n);
+    m.cells.forEach((c) => (c.w = even));
+    m.cells[n - 1].w = newW - even * (n - 1);
+  }
+}
+
+export type { FacadeKind };

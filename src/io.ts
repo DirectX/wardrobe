@@ -1,6 +1,6 @@
 import { store } from './store.ts';
 import { ui, renderAll } from './state.ts';
-import type { Project } from './types.ts';
+import { migrate } from './migrate.ts';
 
 function downloadBlob(blob: Blob, filename: string): void {
   const a = document.createElement('a');
@@ -26,9 +26,8 @@ export function openJson(): void {
     const rd = new FileReader();
     rd.addEventListener('load', () => {
       try {
-        const p = JSON.parse(String(rd.result)) as Project;
-        if (!p || p.version !== 1 || !p.walls?.center || !Array.isArray(p.modules))
-          throw new Error('invalid');
+        const p = migrate(JSON.parse(String(rd.result)) as unknown);
+        if (!p) throw new Error('invalid');
         store.replace(p);
       } catch {
         ui.message = 'Не удалось прочитать файл проекта';
