@@ -17,15 +17,17 @@ import {
   CARCASS_T,
   cornerZones,
   countLeaves,
+  dividerSnapCandidates,
   layoutModule,
   modulesOn,
   shelfYsIn,
+  snapTolerance,
   wallStart,
 } from './geometry.ts';
 import { validate } from './validate.ts';
 import { migrate } from './migrate.ts';
 import { renderFacade } from './views/facade.ts';
-import { renderProps } from './panels.ts';
+import { renderLibrary, renderProps } from './panels.ts';
 import type { LeafFace, Path, Project } from './types.ts';
 
 const results: string[] = [];
@@ -353,6 +355,58 @@ export function runAutoTest(): void {
     } else {
       check('панель: найдена ниша без шага', false);
     }
+  }
+
+  // 15. привязка разделителей к существующим + контекстная панель
+  {
+    const Lc = store.project.walls.center.length;
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    // v-сплит, затем h-сплиты в обеих половинах -> две горизонтальные перегородки
+    splitLeaf(bm.id, [], 'v');
+    splitLeaf(bm.id, [0], 'h');
+    splitLeaf(bm.id, [1], 'h');
+    const p = store.project;
+    const m = mod(bm.id);
+
+    const candsH = dividerSnapCandidates(p, m, 'h', [0], 0);
+    check('snap: кандидаты h найдены (вторая полка)', candsH.length === 1);
+    const tol = snapTolerance(p);
+    check(`snap: допуск разумный (${tol})`, tol >= 10 && tol <= 40);
+
+    // тянем первую h-перегородку к позиции второй (не точно — в пределах допуска)
+    const d1 = layoutModule(p, m).dividers.find((d) => d.dir === 'h' && d.path.length === 1 && d.path[0] === 0)!;
+    const targetY = candsH[0] + tol * 0.6; // в пределах допуска, но не точно
+    dragDivider(bm.id, [0], 0, targetY, { candidates: candsH, tol });
+    const m2 = mod(bm.id);
+    const d1b = layoutModule(p, m2).dividers.find((d) => d.dir === 'h' && d.path.length === 1 && d.path[0] === 0)!;
+    const d2b = layoutModule(p, m2).dividers.find((d) => d.dir === 'h' && d.path.length === 1 && d.path[0] === 1)!;
+    const y1 = d1b.y + d1b.h / 2;
+    const y2 = d2b.y + d2b.h / 2;
+    check(`snap: перегородка примагнитилась (${Math.round(y1)} ≈ ${Math.round(y2)})`, Math.abs(y1 - y2) < 0.6);
+    void d1;
+
+    // вне допуска — не магнитится
+    const before = y1;
+    dragDivider(bm.id, [0], 0, candsH[0] + tol * 3, { candidates: [candsH[0]], tol });
+    const d1c = layoutModule(p, mod(bm.id)).dividers.find((d) => d.dir === 'h' && d.path.length === 1 && d.path[0] === 0)!;
+    const y1c = d1c.y + d1c.h / 2;
+    check('snap: вне допуска не магнитится', Math.abs(y1c - candsH[0]) > tol * 2 && Math.abs(y1c - before) > 1);
+
+    // контекстная панель инструментов появляется в библиотеке при выбранном отсеке
+    select({ kind: 'module', id: bm.id }, [0, 0]);
+    const libEl = document.getElementById('library');
+    if (libEl) renderLibrary(libEl);
+    const ctx = document.querySelector('#library .ctx-toolbar');
+    const hasSplit = [...(ctx?.querySelectorAll('button') ?? [])].some((b) => b.textContent?.includes('Вертикально'));
+    const hasFace = [...(ctx?.querySelectorAll('button') ?? [])].some((b) => b.textContent?.includes('Ниша'));
+    check('панель: контекстные инструменты нарезки появились', !!ctx && hasSplit && hasFace);
+    select(null);
+    store.update((pp) => (pp.walls.center.length = Lc));
   }
 
   // инвариант финальный

@@ -9,9 +9,11 @@ import {
   setDividerT,
   setFace,
   splitLeaf,
+  toggleFace,
 } from './edit.ts';
 import { FACADE_FILLS, FACE_LABEL, WALL_LABEL, defaultProject } from './defaults.ts';
 import { WALLS, cornerZones, countLeaves, layoutModule } from './geometry.ts';
+import { pathEq } from './types.ts';
 import { validate } from './validate.ts';
 import { fitFacade } from './views/facade.ts';
 import { openJson, exportPng, saveJson } from './io.ts';
@@ -244,9 +246,64 @@ export function renderLibrary(root: HTMLElement): void {
     h(
       'div',
       { class: 'hint pad-top' },
-      'Клик по отсеку — выбрать. Жёлтые грифы — тяга перегородок. Двойной клик по отсеку — ниша/дверца. Двойной клик по стене — контейнер в этом месте. Внутри отсеков задавайте нарезку и фасады.',
+      'Двойной клик по стене — контейнер в этом месте. Клик по отсеку — выбрать и открыть инструменты нарезки.',
     ),
   );
+
+  // контекстная панель инструментов выбранного отсека
+  const sel = ui.sel;
+  const p = store.project;
+  if (sel?.kind === 'module') {
+    const m = p.modules.find((x) => x.id === sel.id);
+    const path = ui.path;
+    if (m && path) {
+      const lb = layoutModule(p, m).leaves.find((l) => pathEq(l.path, path));
+      if (lb) {
+        const face = lb.leaf.face;
+        root.append(
+          h('div', { class: 'ctx-toolbar' },
+            h('h3', {}, `Инструменты · ${Math.round(lb.w)}×${Math.round(lb.h)}`),
+            h('div', { class: 'hint' }, 'Нарезка отсека:'),
+            h('div', { class: 'row' },
+              btn('⊢ Вертикально', () => splitLeaf(m.id, path, 'v'), 'Разделить вертикальной перегородкой пополам'),
+              btn('⊤ Горизонтально', () => splitLeaf(m.id, path, 'h'), 'Разделить горизонтальной перегородкой (полка) пополам'),
+            ),
+            h('div', { class: 'hint' }, 'Лицо отсека:'),
+            h('div', { class: 'row' },
+              ...(['open', 'door', 'drawers', 'panel'] as const).map((k) => {
+                const b = btn(FACE_LABEL[k], () => {
+                  if (face.kind === k) return;
+                  setFace(
+                    m.id,
+                    path,
+                    k === 'open'
+                      ? { kind: 'open', shelves: 2 }
+                      : k === 'door'
+                        ? { kind: 'door', hinge: 'left', fill: 'дуб лён' }
+                        : k === 'drawers'
+                          ? { kind: 'drawers', drawers: 3, fill: 'дуб лён' }
+                          : { kind: 'panel', fill: 'дуб лён' },
+                  );
+                }, `Сделать отсек: ${FACE_LABEL[k]}`);
+                if (face.kind === k) b.classList.add('active');
+                return b;
+              }),
+            ),
+            h('div', { class: 'row' },
+              btn('⇄ Ниша/дверца', () => toggleFace(m.id, path), 'Быстрое переключение (как двойной клик)'),
+              btn('✕ Убрать отсек', () => removeLeaf(m.id, path), 'Слить с соседом'),
+            ),
+            face.kind === 'open'
+              ? h('div', { class: 'row' },
+                  btn('− полка', () => setFace(m.id, path, { kind: 'open', shelves: Math.max(0, face.shelves - 1), shelfPitch: face.shelfPitch }), 'Убрать полку'),
+                  btn('+ полка', () => setFace(m.id, path, { kind: 'open', shelves: Math.min(20, face.shelves + 1), shelfPitch: face.shelfPitch }), 'Добавить полку'),
+                )
+              : h('div'),
+          ),
+        );
+      }
+    }
+  }
 }
 
 // ------------------------------------------------------------------ props

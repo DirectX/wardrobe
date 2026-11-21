@@ -193,6 +193,38 @@ export function leafAtPoint(
   return null;
 }
 
+/**
+ * Кандидаты привязки для тяги разделителя dir в модуле m:
+ * центры всех остальных разделителей того же направления (для h — y от пола,
+ * для v — x вдоль стены), в тех же координатах, что pos в dragDivider.
+ */
+export function dividerSnapCandidates(
+  p: Project,
+  m: WardModule,
+  dir: 'v' | 'h',
+  excludePath: Path,
+  excludeAfter: number,
+): number[] {
+  const { dividers } = layoutModule(p, m);
+  const out: number[] = [];
+  for (const d of dividers) {
+    if (d.dir !== dir) continue;
+    if (
+      d.after === excludeAfter &&
+      d.path.length === excludePath.length &&
+      d.path.every((v, i) => v === excludePath[i])
+    )
+      continue;
+    out.push(dir === 'v' ? d.x + d.w / 2 : d.y + d.h / 2);
+  }
+  return out;
+}
+
+/** Допуск привязки, мм: не меньше шага сетки, но и не слишком грубый. */
+export function snapTolerance(p: Project): number {
+  return clamp(p.grid > 0 ? p.grid / 2 : 25, 10, 40);
+}
+
 /** Высоты полок внутри листа (от пола). */
 export function shelfYsIn(bottom: number, height: number, shelves: number, pitch?: number | null): number[] {
   const top = bottom + height;

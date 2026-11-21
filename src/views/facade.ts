@@ -4,10 +4,12 @@ import {
   WALLS,
   CARCASS_T,
   cornerZones,
+  dividerSnapCandidates,
   findModule,
   layoutModule,
   modulesOn,
   shelfYsIn,
+  snapTolerance,
   totalElevationWidth,
   wallAtX,
   wallStart,
@@ -206,6 +208,25 @@ export function renderFacade(): void {
       `<circle cx="${cx + 16}" cy="${cy}" r="7" fill="${bad ? COL.danger : '#20242b'}"/>`,
       `</g>`,
     );
+  }
+
+  // подсветка сработавшей привязки разделителя
+  if (drag?.mode === 'divider' && drag.snapAt !== null && drag.wall && drag.axis) {
+    const dm = drag.id ? findModule(p, drag.id) : undefined;
+    if (dm && dm.wall === drag.wall) {
+      const x0 = starts[drag.wall];
+      if (drag.axis === 'h') {
+        const yLine = fy(drag.snapAt);
+        parts.push(
+          `<line x1="${x0 + dm.from - 30}" y1="${yLine}" x2="${x0 + dm.from + dm.w + 30}" y2="${yLine}" stroke="${COL.cell}" stroke-width="3" stroke-dasharray="40 24" vector-effect="non-scaling-stroke"/>`,
+        );
+      } else {
+        const xLine = elevOf(p, drag.wall, x0, drag.snapAt);
+        parts.push(
+          `<line x1="${xLine}" y1="${fy(dm.h) - 30}" x2="${xLine}" y2="${fy(0)}" stroke="${COL.cell}" stroke-width="3" stroke-dasharray="40 24" vector-effect="non-scaling-stroke"/>`,
+        );
+      }
+    }
   }
 
   if (sel?.kind === 'module') {
@@ -423,6 +444,8 @@ interface DragState {
   origCy: number;
   moved: boolean;
   needCp: boolean;
+  /** сработавшая привязка разделителя (в данных стены), иначе null */
+  snapAt: number | null;
 }
 
 let drag: DragState | null = null;
@@ -463,6 +486,7 @@ export function attachFacade(el: SVGSVGElement): void {
       origCy: 0,
       moved: false,
       needCp: false,
+      snapAt: null,
     };
     const p = store.project;
     const id = target?.getAttribute('data-id') ?? '';
@@ -587,12 +611,28 @@ export function attachFacade(el: SVGSVGElement): void {
         drag.dir,
         (drag.dir === 'l' ? drag.origFrom : drag.origFrom + drag.origW) + dx,
       );
-    else if (drag.mode === 'divider' && drag.id && drag.path && drag.after !== undefined && drag.wall) {
-      if (drag.axis === 'h') {
-        dragDivider(drag.id, drag.path, drag.after, floorY(mm));
-      } else {
-        const localData = dataOf(p, drag.wall, wallStart(p)[drag.wall], mm.x);
-        dragDivider(drag.id, drag.path, drag.after, localData);
+    else if (drag.mode === 'divider' && drag.id && drag.path && drag.after !== undefined && drag.wall && drag.axis) {
+      const dm = findModule(p, drag.id);
+      const axis = drag.axis;
+      const path = drag.path;
+      const after = drag.after;
+      const wall = drag.wall;
+      const id = drag.id;
+      if (dm) {
+        const snapArg = {
+          candidates: dividerSnapCandidates(p, dm, axis, path, after),
+          tol: snapTolerance(p),
+        };
+        const pos = axis === 'h' ? floorY(mm) : dataOf(p, wall, wallStart(p)[wall], mm.x);
+        let snapped: number | null = null;
+        for (const c of snapArg.candidates) {
+          if (Math.abs(c - pos) <= snapArg.tol) {
+            snapped = c;
+            break;
+          }
+        }
+        drag.snapAt = snapped;
+        dragDivider(id, path, after, pos, snapArg);
       }
     } else if (drag.mode === 'tv') moveTv(drag.origCx + dx, drag.origCy + dy);
     else if (drag.mode === 'socket' && drag.id) moveSocket(drag.id, drag.origCx + dx, drag.origCy + dy);

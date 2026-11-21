@@ -255,11 +255,24 @@ export function toggleFace(id: string, path: Path): void {
   setFace(id, path, face);
 }
 
+/** Параметры привязки: кандидаты (в тех же координатах, что pos) и допуск. */
+export interface DividerSnap {
+  candidates: number[];
+  tol: number;
+}
+
 /**
  * Тяга разделителя: pos — координата в системе стены
- * (x вдоль стены для v, y от пола для h).
+ * (x вдоль стены для v, y от пола для h), трактуется как центр перегородки.
+ * snap — привязка к ранее установленным перегородкам (например, горизонтальным полкам).
  */
-export function dragDivider(id: string, splitPath: Path, after: number, pos: number): void {
+export function dragDivider(
+  id: string,
+  splitPath: Path,
+  after: number,
+  pos: number,
+  snap?: DividerSnap,
+): void {
   const p = store.project;
   const m = p.modules.find((x) => x.id === id);
   if (!m) return;
@@ -276,10 +289,24 @@ export function dragDivider(id: string, splitPath: Path, after: number, pos: num
   const curLeftScaled = a.size * d.scale;
   // начало левого/нижнего ребёнка (d.x/d.y — это уже край после него)
   const childStart = (d.dir === 'v' ? d.x : d.y) - curLeftScaled;
-  // pos трактуем как центр перегородки: вычитаем её полутолщину
-  const target = pos - childStart - d.w / 2;
+  // толщина перегородки вдоль оси тяги: v → d.w, h → d.h
+  const thickness = d.dir === 'v' ? d.w : d.h;
+  let effective = pos;
+  if (snap && snap.tol > 0 && snap.candidates.length) {
+    let best: number | null = null;
+    let bestDist = Infinity;
+    for (const c of snap.candidates) {
+      const dist = Math.abs(c - pos);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = c;
+      }
+    }
+    if (best !== null && bestDist <= snap.tol) effective = best;
+  }
+  const target = effective - childStart - thickness / 2; // желаемый размер левого/нижнего ребёнка
   const minScaled = MIN_LEAF;
-  const maxTarget = d.pairLen - d.w - minScaled;
+  const maxTarget = d.pairLen - thickness - minScaled;
   const clamped = clamp(target, minScaled, Math.max(minScaled, maxTarget));
   const shift = clamped - curLeftScaled;
   store.update((pp) => {
