@@ -1,4 +1,5 @@
 import type { BoxNode, LeafNode, Project, Path, SplitNode, WallId, WardModule } from './types.ts';
+import { getNode } from './types.ts';
 
 export const WALLS: WallId[] = ['left', 'center', 'right'];
 /** визуальный зазор между раскрытыми фасадами стен, мм */
@@ -218,7 +219,9 @@ export function leafAtPoint(
  *   - все перегородки того же направления во всех модулях стены
  *     (кроме перетаскиваемой — exclude);
  *   - для h дополнительно — линии полок внутри открытых ниш
- *     («уже установленные горизонтальные полки»).
+ *     («уже установленные горизонтальные полки»);
+ *   - для v дополнительно — центры модулей и вложенных секций
+ *     (симметричное деление проёма пополам).
  */
 export function dividerSnapCandidates(
   p: Project,
@@ -246,6 +249,15 @@ export function dividerSnapCandidates(
         if (lb.leaf.face.kind !== 'open') continue;
         const f = lb.leaf.face;
         for (const sy of shelfYsIn(lb.y, lb.h, f.shelves, f.shelfPitch)) out.push(sy);
+      }
+    }
+    if (dir === 'v') {
+      // центр модуля и центры вложенных секций — для симметричного деления
+      out.push(m.from + m.w / 2);
+      for (const [key, b] of nodeBoxes(p, m)) {
+        if (key === '') continue;
+        const node = getNode(m.root, key.split('.').map(Number));
+        if (node?.type === 'split') out.push(b.x + b.w / 2);
       }
     }
   }
