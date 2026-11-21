@@ -60,7 +60,7 @@ export function addModule(wall: WallId): void {
   }
   const m = newModule(wall, from, w, p);
   store.update((pp) => pp.modules.push(m));
-  select({ kind: 'module', id: m.id }, [0]);
+  select({ kind: 'module', id: m.id }, []);
 }
 
 /** Двойной клик по пустому месту стены: контейнер центром под курсором. */
@@ -85,7 +85,7 @@ export function insertModuleAtPointer(wall: WallId, xMm: number): void {
     return;
   }
   store.replace(draft);
-  select({ kind: 'module', id: proto.id }, [0]);
+  select({ kind: 'module', id: proto.id }, []);
 }
 
 export function moveModule(id: string, newFrom: number): void {
@@ -156,7 +156,7 @@ export function duplicateModule(id: string): void {
     }
   }
   store.replace(draft);
-  select({ kind: 'module', id: copy.id });
+  select({ kind: 'module', id: copy.id }, []);
 }
 
 // ------------------------------------------------------------------ нарезка
@@ -189,13 +189,13 @@ export function splitLeaf(id: string, path: Path, dir: 'v' | 'h'): void {
   select({ kind: 'module', id }, [...path, 1]);
 }
 
-/** Убрать лист: его размер уходит соседу, пустой сплит схлопывается. */
-export function removeLeaf(id: string, path: Path): void {
+/** Убрать узел (лист или секцию целиком): размер уходит соседу, пустой сплит схлопывается. */
+export function removeNode(id: string, path: Path): void {
   if (path.length === 0) return;
   patchModule(id, (m) => {
     m.root = dropLeaf(m.root, path);
   });
-  select({ kind: 'module', id }, path.length > 1 ? path.slice(0, -1) : null);
+  select({ kind: 'module', id }, path.slice(0, -1));
 }
 
 function dropLeaf(root: BoxNode, path: Path): BoxNode {
@@ -234,10 +234,39 @@ export function setDividerT(id: string, path: Path, t: number): void {
   });
 }
 
+/** Толщина разделителя самого узла path (когда выбрана секция-split). */
+export function setSplitT(id: string, path: Path, t: number): void {
+  patchModule(id, (m) => {
+    const node = resolveNode(m.root, path);
+    if (node?.type === 'split') node.t = clamp(Math.round(t), 0, 60);
+  });
+}
+
+/** Повернуть нарезку секции: вертикальная ↔ горизонтальная (размеры относительные). */
+export function setSplitDir(id: string, path: Path): void {
+  patchModule(id, (m) => {
+    const node = resolveNode(m.root, path);
+    if (node?.type === 'split') node.dir = node.dir === 'v' ? 'h' : 'v';
+  });
+}
+
 export function setFace(id: string, path: Path, face: LeafFace): void {
   patchModule(id, (m) => {
     const node = resolveNode(m.root, path);
     if (node?.type === 'leaf') node.face = face;
+  });
+}
+
+/** Массово задать лицо всем листам под узлом path (секция целиком). */
+export function setFaceGroup(id: string, path: Path, face: LeafFace): void {
+  patchModule(id, (m) => {
+    const node = resolveNode(m.root, path);
+    if (!node) return;
+    const walk = (n: BoxNode) => {
+      if (n.type === 'leaf') n.face = structuredClone(face);
+      else n.children.forEach((c) => walk(c.node));
+    };
+    walk(node);
   });
 }
 
@@ -427,5 +456,5 @@ export function makeNicheUnderTv(): void {
   };
   draft.modules = [...others, ...rebuilt, niche];
   store.replace(draft);
-  select({ kind: 'module', id: niche.id });
+  select({ kind: 'module', id: niche.id }, []);
 }

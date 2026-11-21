@@ -2,14 +2,16 @@
 
 import { store } from './store.ts';
 import { select, ui } from './state.ts';
+import { pathEq } from './types.ts';
 import {
   addModule,
   addSocketAt,
   dragDivider,
   makeNicheUnderTv,
   moveModule,
-  removeLeaf,
+  removeNode,
   setFace,
+  setFaceGroup,
   splitLeaf,
   toggleFace,
 } from './edit.ts';
@@ -150,12 +152,12 @@ export function runAutoTest(): void {
   {
     const m = mod(box1.id);
     const n = countLeaves(m.root);
-    removeLeaf(box1.id, [1, 0]);
-    check('removeLeaf: листов -1', countLeaves(mod(box1.id).root) === n - 1);
-    removeLeaf(box1.id, [1]);
-    check('removeLeaf: сплит схлопнулся в лист', mod(box1.id).root.type === 'leaf');
-    check('removeLeaf: последний лист не удаляется', (() => {
-      removeLeaf(box1.id, []);
+    removeNode(box1.id, [1, 0]);
+    check('removeNode: листов -1', countLeaves(mod(box1.id).root) === n - 1);
+    removeNode(box1.id, [1]);
+    check('removeNode: сплит схлопнулся в лист', mod(box1.id).root.type === 'leaf');
+    check('removeNode: корень не удаляется', (() => {
+      removeNode(box1.id, []);
       return mod(box1.id).root.type === 'leaf';
     })());
   }
@@ -333,6 +335,18 @@ export function runAutoTest(): void {
       }
     }
     check(`render: листы на месте корпуса (проверено ${checked})`, ok && checked > 0);
+    // каждый leaf-группа должна содержать кликабельную подложку (regression: пустая ниша не ловила клик)
+    const leafGroups = facadeSvg?.querySelectorAll('g[data-hit="leaf"]') ?? [];
+    let hitOk = leafGroups.length > 0;
+    leafGroups.forEach((g) => {
+      const painted = [...g.querySelectorAll('rect, line, path')].some((el) => {
+        const pe = el.getAttribute('pointer-events');
+        const fill = el.getAttribute('fill');
+        return pe === 'all' || (fill !== null && fill !== 'none' && fill !== 'transparent');
+      });
+      if (!painted) hitOk = false;
+    });
+    check(`render: все ${leafGroups.length} отсеков кликабельны`, hitOk);
     }
   }
 
@@ -354,6 +368,32 @@ export function runAutoTest(): void {
       select(null);
     } else {
       check('панель: найдена ниша без шага', false);
+    }
+  }
+
+  // 14b. дерево структуры: клик по секции выбирает split, групповое лицо применяется
+  {
+    const c = store.project.modules.find((m) => modulesOn(store.project, 'center').includes(m));
+    void c;
+    const m3 = modulesOn(store.project, 'center').find((m) => countLeaves(m.root) >= 2);
+    if (m3) {
+      select({ kind: 'module', id: m3.id }, [0]);
+      const propsEl = document.getElementById('props');
+      if (propsEl) renderProps(propsEl);
+      const treeRows = document.querySelectorAll('#props .tree-row');
+      check('дерево: строки узлов отрисованы', treeRows.length >= 2);
+      const secNode = document.querySelector('#props .tree-row.sel');
+      check('дерево: выбранный узел подсвечен', !!secNode && !!secNode.textContent?.includes('Секция'));
+      // групповое лицо через setFaceGroup
+      setFaceGroup(m3.id, [], { kind: 'panel', fill: 'графит' });
+      check('setFaceGroup: все листья стали панелями', faces(mod(m3.id).root).every((f) => f.kind === 'panel'));
+      // удаление всей секции целиком (не листа)
+      const nBefore = countLeaves(mod(m3.id).root);
+      removeNode(m3.id, [0]);
+      check('removeNode: секция целиком удалена', countLeaves(mod(m3.id).root) < nBefore);
+      select(null);
+    } else {
+      check('дерево: найден модуль с 2+ листьями', false);
     }
   }
 
@@ -397,16 +437,94 @@ export function runAutoTest(): void {
     const y1c = d1c.y + d1c.h / 2;
     check('snap: вне допуска не магнитится', Math.abs(y1c - candsH[0]) > tol * 2 && Math.abs(y1c - before) > 1);
 
-    // контекстная панель инструментов появляется в библиотеке при выбранном отсеке
+    // контекстные инструменты нарезки — слева, свойства лица — справа
     select({ kind: 'module', id: bm.id }, [0, 0]);
     const libEl = document.getElementById('library');
     if (libEl) renderLibrary(libEl);
+    const propsEl = document.getElementById('props');
+    if (propsEl) renderProps(propsEl);
     const ctx = document.querySelector('#library .ctx-toolbar');
     const hasSplit = [...(ctx?.querySelectorAll('button') ?? [])].some((b) => b.textContent?.includes('Вертикально'));
-    const hasFace = [...(ctx?.querySelectorAll('button') ?? [])].some((b) => b.textContent?.includes('Ниша'));
-    check('панель: контекстные инструменты нарезки появились', !!ctx && hasSplit && hasFace);
+    const hasFaceLeft = [...(ctx?.querySelectorAll('button') ?? [])].some((b) => b.textContent?.includes('Ниша'));
+    const hasFaceProps = [...(document.querySelectorAll('#props button, #props select'))].some(
+      (b) => b.textContent?.includes('Ниша') || (b as HTMLSelectElement).value === 'open',
+    );
+    check('панель: нарезка слева', !!ctx && hasSplit && !hasFaceLeft);
+    check('панель: лицо отсека в свойствах справа', hasFaceProps);
     select(null);
     store.update((pp) => (pp.walls.center.length = Lc));
+  }
+
+  // 16. РЕАЛЬНЫЙ клик по ячейке: что перехватывает и что выбирается
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+      pp.sockets = [];
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    check('click: после addModule выбрана корневая ячейка', pathEq(ui.path, []));
+    splitLeaf(bm.id, [], 'v');
+    splitLeaf(bm.id, [1], 'h');
+    select({ kind: 'module', id: bm.id }, [1, 0]);
+    renderFacade();
+
+    const svgEl = document.getElementById('facade') as unknown as SVGSVGElement;
+    const probe = (pathStr: string): string => {
+      const g = svgEl.querySelector(`g[data-hit="leaf"][data-path="${pathStr}"]`);
+      const r = g?.querySelector('rect') as SVGGraphicsElement | null;
+      if (!r) return 'нет-rect';
+      const bb = r.getBoundingClientRect();
+      const el = document.elementFromPoint(bb.x + bb.width / 2, bb.y + bb.height / 2);
+      const top = el?.closest('[data-hit]');
+      return `${top?.getAttribute('data-hit') ?? 'null'}:${top?.getAttribute('data-path') ?? top?.getAttribute('data-dir') ?? ''}`;
+    };
+    const probes = ['0', '1.0', '1.1'].map((ps) => `${ps}→${probe(ps)}`);
+    check(
+      `click: elementFromPoint попадает в leaf (${probes.join(', ')})`,
+      ['0', '1.0', '1.1'].every((ps) => probe(ps) === `leaf:${ps}`),
+    );
+
+    // синтетический pointerdown в центре ячейки 1.0
+    {
+      const g = svgEl.querySelector(`g[data-hit="leaf"][data-path="1.0"]`);
+      const r = g?.querySelector('rect') as SVGGraphicsElement;
+      const bb = r.getBoundingClientRect();
+      select(null);
+      const evInit: PointerEventInit = {
+        bubbles: true,
+        cancelable: true,
+        clientX: bb.x + bb.width / 2,
+        clientY: bb.y + bb.height / 2,
+        button: 0,
+        pointerId: 7,
+        isPrimary: true,
+      };
+      const target = document.elementFromPoint(evInit.clientX!, evInit.clientY!) ?? svgEl;
+      const targetInfo = `${target.tagName}[${target.closest('[data-hit]')?.getAttribute('data-hit')}:${target.closest('[data-hit]')?.getAttribute('data-path')}]`;
+      target.dispatchEvent(new PointerEvent('pointerdown', evInit));
+      target.dispatchEvent(new PointerEvent('pointerup', evInit));
+      check(
+        `click: pointerdown по ячейке выбирает её (target=${targetInfo}, sel=${ui.sel?.kind}, path=${ui.path?.join('.') ?? 'null'})`,
+        ui.sel?.kind === 'module' && pathEq(ui.path, [1, 0]),
+      );
+    }
+
+    // сплит из тулбара должен применяться к ВЫБРАННОЙ ячейке, а не к контейнеру
+    {
+      select({ kind: 'module', id: bm.id }, [0]);
+      const before = countLeaves(mod(bm.id).root);
+      splitLeaf(bm.id, [0], 'h');
+      const m = mod(bm.id);
+      const rightUntouched = (() => {
+        const node = (m.root as { children: { node: { type: string } }[] }).children[1].node;
+        return node.type === 'split' && (node as unknown as { children: unknown[] }).children.length === 2;
+      })();
+      check('split: режется выбранная ячейка, а не контейнер', countLeaves(m.root) === before + 1 && rightUntouched);
+      check('split: выбор перешёл на новую ячейку', pathEq(ui.path, [0, 1]));
+    }
   }
 
   // инвариант финальный

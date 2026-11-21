@@ -282,3 +282,38 @@ export function resolveAround(p: Project, wall: WallId, anchor: WardModule): boo
     (m) => m.from >= z.start - 0.5 && wallEnd(m) <= p.walls[wall].length - z.end + 0.5,
   );
 }
+
+/**
+ * Габариты каждого узла дерева (ключ — путь через точку, '' — корень/нутро короба).
+ * Считается объединением боксов листьев и перегородок соответствующих поддеревьев.
+ */
+export function nodeBoxes(
+  p: Project,
+  m: WardModule,
+): Map<string, { x: number; y: number; w: number; h: number }> {
+  const { leaves, dividers } = layoutModule(p, m);
+  const boxes = new Map<string, { x: number; y: number; w: number; h: number }>();
+  const add = (key: string, x: number, y: number, w: number, hh: number) => {
+    const cur = boxes.get(key);
+    if (!cur) boxes.set(key, { x, y, w, h: hh });
+    else {
+      const x2 = Math.max(cur.x + cur.w, x + w);
+      const y2 = Math.max(cur.y + cur.h, y + hh);
+      cur.x = Math.min(cur.x, x);
+      cur.y = Math.min(cur.y, y);
+      cur.w = x2 - cur.x;
+      cur.h = y2 - cur.y;
+    }
+  };
+  const ib = interiorBox(p, m);
+  add('', ib.x, ib.y, ib.w, ib.h);
+  for (const lb of leaves) {
+    for (let i = 1; i <= lb.path.length; i++) add(lb.path.slice(0, i).join('.'), lb.x, lb.y, lb.w, lb.h);
+  }
+  for (const d of dividers) {
+    for (let i = 1; i <= d.path.length; i++) add(d.path.slice(0, i).join('.'), d.x, d.y, d.w, d.h);
+    // перегородки принадлежат и сплиту-владельцу (d.path), учтём его целиком
+    add(d.path.join('.'), d.x, d.y, d.w, d.h);
+  }
+  return boxes;
+}

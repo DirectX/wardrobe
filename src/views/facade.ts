@@ -310,28 +310,34 @@ function renderModule(
     `</g>`,
   );
 
-  // грифы разделителей — поверх, при выбранном модуле
+  // грифы разделителей — поверх, при выбранном модуле.
+  // Зона захвата строго в границах самой перегородки (d.x/y/w/h), чтобы не перекрывать ячейки.
   if (isSel) {
     for (const d of dividers) {
       const label = pathStr(d.path);
       if (d.dir === 'v') {
+        // вертикальная перегородка: тонкая по x, тянется по y в пределах своего сплита
         const cx = span(d.x + d.w / 2, 0);
+        const topY = fy(d.y + d.h);
+        const dh = d.h;
         out.push(
           `<g data-hit="divider" data-id="${m.id}" data-path="${label}" data-after="${d.after}" data-dir="v" style="cursor:col-resize">`,
-          `<rect x="${cx - 15}" y="${Y}" width="30" height="${m.h}" fill="${COL.cell}" opacity="0.18"/>`,
-          `<rect x="${cx - 18}" y="${Y + (m.h - 140) / 2}" width="36" height="140" rx="11" fill="${COL.cell}"/>`,
-          `<line x1="${cx - 4}" y1="${Y + m.h / 2 - 16}" x2="${cx - 4}" y2="${Y + m.h / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
-          `<line x1="${cx + 4}" y1="${Y + m.h / 2 - 16}" x2="${cx + 4}" y2="${Y + m.h / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<rect x="${cx - 15}" y="${topY}" width="30" height="${dh}" fill="${COL.cell}" opacity="0.18"/>`,
+          `<rect x="${cx - 18}" y="${topY + (dh - 140) / 2}" width="36" height="${Math.min(140, dh * 0.6)}" rx="11" fill="${COL.cell}"/>`,
+          `<line x1="${cx - 4}" y1="${topY + dh / 2 - 16}" x2="${cx - 4}" y2="${topY + dh / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<line x1="${cx + 4}" y1="${topY + dh / 2 - 16}" x2="${cx + 4}" y2="${topY + dh / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
           `</g>`,
         );
       } else {
+        // горизонтальная перегородка: тянется по x в пределах своего сплита, тонкая по y
         const cy = fy(d.y + d.h / 2);
+        const leftX = span(d.x, d.w);
         out.push(
           `<g data-hit="divider" data-id="${m.id}" data-path="${label}" data-after="${d.after}" data-dir="h" style="cursor:row-resize">`,
-          `<rect x="${X}" y="${cy - 15}" width="${m.w}" height="30" fill="${COL.cell}" opacity="0.18"/>`,
-          `<rect x="${X + (m.w - 140) / 2}" y="${cy - 18}" width="140" height="36" rx="11" fill="${COL.cell}"/>`,
-          `<line x1="${X + m.w / 2 - 16}" y1="${cy - 4}" x2="${X + m.w / 2 + 16}" y2="${cy - 4}" stroke="#3a2c00" stroke-width="3"/>`,
-          `<line x1="${X + m.w / 2 - 16}" y1="${cy + 4}" x2="${X + m.w / 2 + 16}" y2="${cy + 4}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<rect x="${leftX}" y="${cy - 15}" width="${d.w}" height="30" fill="${COL.cell}" opacity="0.18"/>`,
+          `<rect x="${leftX + (d.w - 140) / 2}" y="${cy - 18}" width="${Math.min(140, d.w * 0.6)}" height="36" rx="11" fill="${COL.cell}"/>`,
+          `<line x1="${leftX + d.w / 2 - 16}" y1="${cy - 4}" x2="${leftX + d.w / 2 + 16}" y2="${cy - 4}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<line x1="${leftX + d.w / 2 - 16}" y1="${cy + 4}" x2="${leftX + d.w / 2 + 16}" y2="${cy + 4}" stroke="#3a2c00" stroke-width="3"/>`,
           `</g>`,
         );
       }
@@ -371,6 +377,8 @@ function renderLeaf(ctx: RenderCtx, m: WardModule, lb: LeafBox, moduleSelected: 
   out.push(
     `<g data-hit="leaf" data-id="${m.id}" data-path="${pathStr(lb.path)}" style="cursor:pointer">`,
     `<title>Отсек ${pathStr(lb.path) || '—'}: ${faceTitle} · ${Math.round(lb.w)}×${Math.round(lb.h)}</title>`,
+    // невидимая подложка: лист кликабелен даже когда он «пустой» (ниша без полок)
+    `<rect x="${x}" y="${y}" width="${Math.max(0, lb.w)}" height="${Math.max(0, lb.h)}" fill="transparent" pointer-events="all"/>`,
   );
   if (face.kind === 'open') {
     for (const sy of shelfYsIn(lb.y, lb.h, face.shelves, face.shelfPitch)) {
@@ -472,7 +480,11 @@ export function attachFacade(el: SVGSVGElement): void {
     const mm = toMm(e);
     const target = (e.target as Element).closest('[data-hit]');
     const hit = target?.getAttribute('data-hit') ?? null;
-    el.setPointerCapture(e.pointerId);
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      // синтетические/неактивные pointerId — не критично
+    }
     const base: DragState = {
       mode: 'pan',
       sign: 1,
@@ -507,6 +519,9 @@ export function attachFacade(el: SVGSVGElement): void {
         needCp: true,
       };
     } else if (hit === 'divider' && m && target) {
+      // выбор секции, которой принадлежит перегородка
+      select({ kind: 'module', id: m.id }, pathParse(target.getAttribute('data-path') ?? ''));
+      ui.wall = m.wall;
       drag = {
         ...base,
         mode: 'divider',

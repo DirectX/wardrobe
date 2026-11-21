@@ -5,15 +5,18 @@ import {
   deleteSelected,
   duplicateModule,
   makeNicheUnderTv,
-  removeLeaf,
+  removeNode,
   setDividerT,
   setFace,
+  setFaceGroup,
+  setSplitDir,
+  setSplitT,
   splitLeaf,
   toggleFace,
 } from './edit.ts';
 import { FACADE_FILLS, FACE_LABEL, WALL_LABEL, defaultProject } from './defaults.ts';
-import { WALLS, cornerZones, countLeaves, layoutModule } from './geometry.ts';
-import { pathEq } from './types.ts';
+import { WALLS, cornerZones, countLeaves, layoutModule, nodeBoxes } from './geometry.ts';
+import { getNode, pathEq } from './types.ts';
 import { validate } from './validate.ts';
 import { fitFacade } from './views/facade.ts';
 import { openJson, exportPng, saveJson } from './io.ts';
@@ -246,59 +249,42 @@ export function renderLibrary(root: HTMLElement): void {
     h(
       'div',
       { class: 'hint pad-top' },
-      'Двойной клик по стене — контейнер в этом месте. Клик по отсеку — выбрать и открыть инструменты нарезки.',
+      'Двойной клик по стене — контейнер в этом месте. Клик по отсеку или строке дерева справа — выбрать узел.',
     ),
   );
 
-  // контекстная панель инструментов выбранного отсека
+  // контекстные инструменты нарезки выбранного узла
   const sel = ui.sel;
   const p = store.project;
   if (sel?.kind === 'module') {
     const m = p.modules.find((x) => x.id === sel.id);
     const path = ui.path;
     if (m && path) {
-      const lb = layoutModule(p, m).leaves.find((l) => pathEq(l.path, path));
-      if (lb) {
-        const face = lb.leaf.face;
+      const node = getNode(m.root, path);
+      const boxes = nodeBoxes(p, m);
+      const bb = boxes.get(path.join('.'));
+      if (node && bb) {
+        const isLeaf = node.type === 'leaf';
         root.append(
           h('div', { class: 'ctx-toolbar' },
-            h('h3', {}, `Инструменты · ${Math.round(lb.w)}×${Math.round(lb.h)}`),
-            h('div', { class: 'hint' }, 'Нарезка отсека:'),
+            h('h3', {}, `Нарезка · ${Math.round(bb.w)}×${Math.round(bb.h)} мм`),
+            h('div', { class: 'hint' }, isLeaf ? 'Разделить выбранный отсек:' : 'Выбрана секция — режьте её отсеки:'),
             h('div', { class: 'row' },
-              btn('⊢ Вертикально', () => splitLeaf(m.id, path, 'v'), 'Разделить вертикальной перегородкой пополам'),
-              btn('⊤ Горизонтально', () => splitLeaf(m.id, path, 'h'), 'Разделить горизонтальной перегородкой (полка) пополам'),
-            ),
-            h('div', { class: 'hint' }, 'Лицо отсека:'),
-            h('div', { class: 'row' },
-              ...(['open', 'door', 'drawers', 'panel'] as const).map((k) => {
-                const b = btn(FACE_LABEL[k], () => {
-                  if (face.kind === k) return;
-                  setFace(
-                    m.id,
-                    path,
-                    k === 'open'
-                      ? { kind: 'open', shelves: 2 }
-                      : k === 'door'
-                        ? { kind: 'door', hinge: 'left', fill: 'дуб лён' }
-                        : k === 'drawers'
-                          ? { kind: 'drawers', drawers: 3, fill: 'дуб лён' }
-                          : { kind: 'panel', fill: 'дуб лён' },
-                  );
-                }, `Сделать отсек: ${FACE_LABEL[k]}`);
-                if (face.kind === k) b.classList.add('active');
+              (() => {
+                const b = btn('⊢ Вертикально', () => splitLeaf(m.id, path, 'v'), 'Разделить вертикальной перегородкой пополам');
+                if (!isLeaf) b.disabled = true;
                 return b;
-              }),
+              })(),
+              (() => {
+                const b = btn('⊤ Горизонтально', () => splitLeaf(m.id, path, 'h'), 'Разделить горизонтальной перегородкой (полка) пополам');
+                if (!isLeaf) b.disabled = true;
+                return b;
+              })(),
             ),
             h('div', { class: 'row' },
-              btn('⇄ Ниша/дверца', () => toggleFace(m.id, path), 'Быстрое переключение (как двойной клик)'),
-              btn('✕ Убрать отсек', () => removeLeaf(m.id, path), 'Слить с соседом'),
+              btn('✕ Убрать узел', () => removeNode(m.id, path), 'Удалить отсек/секцию — размер уходит соседу'),
             ),
-            face.kind === 'open'
-              ? h('div', { class: 'row' },
-                  btn('− полка', () => setFace(m.id, path, { kind: 'open', shelves: Math.max(0, face.shelves - 1), shelfPitch: face.shelfPitch }), 'Убрать полку'),
-                  btn('+ полка', () => setFace(m.id, path, { kind: 'open', shelves: Math.min(20, face.shelves + 1), shelfPitch: face.shelfPitch }), 'Добавить полку'),
-                )
-              : h('div'),
+            h('div', { class: 'hint' }, 'Свойства лица (ниша/дверца/ящики) — в правой панели.'),
           ),
         );
       }
@@ -422,33 +408,124 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
   );
   if (z.start > 0 || z.end > 0) {
     root.append(
-      h(
-        'div',
-        { class: 'hint' },
-        `Углы стены заняты: ${z.start} слева, ${z.end} справа (глубина смежного ряда).`,
-      ),
+      h('div', { class: 'hint' }, `Углы стены заняты: ${z.start} слева, ${z.end} справа (глубина смежного ряда).`),
     );
   }
 
-  root.append(h('h4', {}, `Нарезка · отсеков: ${countLeaves(m.root)}`));
+  // ------------------------------------------------- дерево структуры
+  root.append(h('h4', {}, `Структура · отсеков: ${countLeaves(m.root)}`));
+  const boxes = nodeBoxes(p, m);
+  const tree = h('div', { class: 'tree' });
+  const selPath = ui.path;
+  const renderNode = (node: BoxNode, path: Path, depth: number) => {
+    const bb = boxes.get(path.join('.'));
+    const sizeStr = bb ? ` · ${Math.round(bb.w)}×${Math.round(bb.h)}` : '';
+    const label =
+      node.type === 'split'
+        ? `${node.dir === 'v' ? '⊢ Секция' : '⊤ Секция'} ${path.join('.') || '·'} (${node.children.length}${sizeStr})`
+        : `— ${FACE_LABEL[node.face.kind]}${sizeStr}`;
+    const row = h('div', { class: 'tree-row', style: `padding-left:${depth * 12}px` }, label);
+    if (selPath && pathEq(selPath, path)) row.classList.add('sel');
+    row.addEventListener('click', () => {
+      select({ kind: 'module', id: m.id }, path);
+      renderAll();
+    });
+    tree.append(row);
+    if (node.type === 'split') {
+      node.children.forEach((c, i) => renderNode(c.node, [...path, i], depth + 1));
+    }
+  };
+  renderNode(m.root, [], 0);
+  root.append(tree);
+
+  // ------------------------------------------------- свойства выбранного узла
   const path = ui.path;
-  const leaf = path ? findLeafBox(p, m, path) : null;
-  if (!leaf) {
-    root.append(h('div', { class: 'hint' }, 'Кликните отсек на чертеже, чтобы нарезать его.'));
+  const node = path ? getNode(m.root, path) : null;
+  if (!path || !node) {
+    root.append(h('div', { class: 'hint' }, 'Выберите узел в дереве или на чертеже.'));
     return;
   }
 
-  const setPath = (np: Path | null) => {
-    select({ kind: 'module', id: m.id }, np);
+  if (node.type === 'split') {
+    renderSplitProps(root, p, m, path, node);
+    return;
+  }
+  renderLeafProps(root, p, m, path, node);
+}
+
+function renderSplitProps(
+  root: HTMLElement,
+  p: Project,
+  m: WardModule,
+  path: Path,
+  node: BoxNode & { type: 'split' },
+): void {
+  root.append(h('h4', {}, `Секция ${path.join('.') || '·'}`));
+  const boxes = nodeBoxes(p, m);
+  const bb = boxes.get(path.join('.'));
+  root.append(
+    h('div', { class: 'hint' }, `${node.dir === 'v' ? 'Вертикальная' : 'Горизонтальная'} нарезка · ${node.children.length} дет. · ${bb ? `${Math.round(bb.w)}×${Math.round(bb.h)} мм` : ''}`),
+    fieldNum(
+      'перегородка, мм',
+      node.t,
+      (v) => setSplitT(m.id, path, v),
+      { step: '2', min: 0, max: 60, title: 'Толщина всех перегородок секции' },
+    ),
+    h(
+      'div',
+      { class: 'row' },
+      btn('⇄ Повернуть нарезку', () => setSplitDir(m.id, path), 'Вертикальная ↔ горизонтальная'),
+      path.length > 0 ? btn('↑ Наверх', () => {
+        select({ kind: 'module', id: m.id }, path.slice(0, -1));
+        renderAll();
+      }, 'Выбрать родительский узел') : h('span'),
+    ),
+  );
+
+  // массовые операции над всеми листьями секции
+  root.append(h('div', { class: 'hint' }, 'Лицо всех отсеков секции:'));
+  root.append(
+    h(
+      'div',
+      { class: 'row' },
+      ...(['open', 'door', 'drawers', 'panel'] as const).map((k) =>
+        btn(FACE_LABEL[k], () => {
+          setFaceGroup(
+            m.id,
+            path,
+            k === 'open'
+              ? { kind: 'open', shelves: 2 }
+              : k === 'door'
+                ? { kind: 'door', hinge: 'left', fill: 'дуб лён' }
+                : k === 'drawers'
+                  ? { kind: 'drawers', drawers: 3, fill: 'дуб лён' }
+                  : { kind: 'panel', fill: 'дуб лён' },
+          );
+          renderAll();
+        }, `Сделать ${FACE_LABEL[k].toLowerCase()} во всех отсеках секции`),
+      ),
+    ),
+  );
+}
+
+function renderLeafProps(
+  root: HTMLElement,
+  p: Project,
+  m: WardModule,
+  path: Path,
+  node: BoxNode & { type: 'leaf' },
+): void {
+  const lb = layoutModule(p, m).leaves.find((l) => pathEq(l.path, path));
+  root.append(h('h4', {}, `Отсек ${path.join('.') || '·'}`));
+  if (lb) root.append(h('div', { class: 'hint' }, `${Math.round(lb.w)}×${Math.round(lb.h)} мм`));
+
+  const patchFace = (next: LeafFace) => {
+    setFace(m.id, path, next);
     renderAll();
   };
-  const box = h('div', { class: 'facade-row sel' });
-  box.append(h('span', { class: 'row-label' }, `Отсек ${path!.join('·') || '—'} · ${Math.round(leaf.w)}×${Math.round(leaf.h)} мм`));
+  const face = node.face;
 
-  const face = leaf.leaf.face;
-  const patchFace = (next: LeafFace) => setFace(m.id, path!, next);
-
-  box.append(
+  root.append(
     fieldSelect(
       'отсек',
       face.kind,
@@ -467,51 +544,49 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
                 ? { kind: 'drawers', drawers: 3, fill: 'дуб лён' }
                 : { kind: 'panel', fill: 'дуб лён' },
         );
-        renderAll();
       },
     ),
   );
+
   if (face.kind === 'open') {
-    const f = face as LeafOpen;
+    const f = face;
     if (f.shelfPitch) {
-      box.append(
+      root.append(
         fieldNumOpt(
           'шаг полки',
           f.shelfPitch ?? null,
           '',
-          (v) => {
-            patchFace({ kind: 'open', shelves: f.shelves, shelfPitch: v && v > 0 ? v : null });
-            renderAll();
-          },
+          (v) => patchFace({ kind: 'open', shelves: f.shelves, shelfPitch: v && v > 0 ? v : null }),
           { class: 'tiny' },
         ),
+        btn('по числу полок', () => patchFace({ kind: 'open', shelves: Math.max(2, f.shelves), shelfPitch: null })),
       );
     } else {
-      box.append(
+      root.append(
         fieldNum(
           'полок',
           f.shelves,
-          (v) => {
-            patchFace({ kind: 'open', shelves: Math.max(0, Math.min(20, Math.round(v))), shelfPitch: null });
-            renderAll();
-          },
+          (v) => patchFace({ kind: 'open', shelves: Math.max(0, Math.min(20, Math.round(v))), shelfPitch: null }),
           { step: '1', min: 0, max: 20 },
         ),
         fieldNumOpt(
           'шаг полки',
           null,
           'мм',
-          (v) => {
-            patchFace({ kind: 'open', shelves: f.shelves, shelfPitch: v && v > 0 ? v : null });
-            renderAll();
-          },
-          { class: 'tiny' },
+          (v) => patchFace({ kind: 'open', shelves: f.shelves, shelfPitch: v && v > 0 ? v : null }),
+          { class: 'tiny', title: 'Равномерные полки фиксированной высоты' },
+        ),
+        h(
+          'div',
+          { class: 'row' },
+          btn('− полка', () => patchFace({ kind: 'open', shelves: Math.max(0, f.shelves - 1), shelfPitch: f.shelfPitch })),
+          btn('+ полка', () => patchFace({ kind: 'open', shelves: Math.min(20, f.shelves + 1), shelfPitch: f.shelfPitch })),
         ),
       );
     }
   }
   if (face.kind === 'door') {
-    box.append(
+    root.append(
       fieldSelect(
         'петля',
         face.hinge,
@@ -519,19 +594,13 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
           ['left', 'Лев.'],
           ['right', 'Прав.'],
         ],
-        (v) => {
-          patchFace({ ...face, hinge: v as 'left' | 'right' });
-          renderAll();
-        },
+        (v) => patchFace({ ...face, hinge: v as 'left' | 'right' }),
       ),
       fieldSelect(
         'цвет',
         face.fill ?? '',
         [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
-        (v) => {
-          patchFace({ ...face, fill: v || undefined });
-          renderAll();
-        },
+        (v) => patchFace({ ...face, fill: v || undefined }),
       ),
       fieldSelect(
         'стекло',
@@ -540,85 +609,59 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
           ['0', 'нет'],
           ['1', 'да'],
         ],
-        (v) => {
-          patchFace({ ...face, glass: v === '1' || undefined });
-          renderAll();
-        },
+        (v) => patchFace({ ...face, glass: v === '1' || undefined }),
       ),
     );
   }
   if (face.kind === 'drawers') {
-    const f = face as LeafDrawers;
-    box.append(
+    root.append(
       fieldNum(
         'ящиков',
-        f.drawers,
-        (v) => {
-          patchFace({ kind: 'drawers', drawers: Math.max(1, Math.min(12, Math.round(v))), fill: f.fill });
-          renderAll();
-        },
+        face.drawers,
+        (v) => patchFace({ kind: 'drawers', drawers: Math.max(1, Math.min(12, Math.round(v))), fill: face.fill }),
         { step: '1', min: 1, max: 12 },
       ),
       fieldSelect(
         'цвет',
-        f.fill ?? '',
+        face.fill ?? '',
         [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
-        (v) => {
-          patchFace({ ...f, fill: v || undefined });
-          renderAll();
-        },
+        (v) => patchFace({ ...face, fill: v || undefined }),
       ),
     );
   }
   if (face.kind === 'panel') {
-    box.append(
+    root.append(
       fieldSelect(
         'цвет',
         face.fill ?? '',
         [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
-        (v) => {
-          patchFace({ ...face, fill: v || undefined });
-          renderAll();
-        },
+        (v) => patchFace({ ...face, fill: v || undefined }),
       ),
     );
   }
-  root.append(box);
-
   root.append(
     h(
       'div',
       { class: 'row' },
-      btn('⊢ ⟂ Разделить', () => splitLeaf(m.id, path!, 'v'), 'Вертикальная перегородка пополам'),
-      btn('⊤ Разделить', () => splitLeaf(m.id, path!, 'h'), 'Горизонтальная перегородка пополам'),
-      btn('✕ Убрать отсек', () => removeLeaf(m.id, path!), 'Слиться с соседом'),
+      btn('⇄ Ниша/дверца', () => toggleFace(m.id, path), 'Быстрое переключение (как двойной клик)'),
+      path.length > 0
+        ? btn('↑ Наверх', () => {
+            select({ kind: 'module', id: m.id }, path.slice(0, -1));
+            renderAll();
+          }, 'Выбрать родительскую секцию')
+        : h('span'),
     ),
   );
-  if (path && path.length > 0) {
+  if (path.length > 0) {
     root.append(
       fieldNum(
-        'перегородка, мм',
+        'перегородка рядом, мм',
         parentT(m, path),
         (v) => setDividerT(m.id, path, v),
-        { step: '2', min: 0, max: 60 },
+        { step: '2', min: 0, max: 60, title: 'Толщина перегородок родительской секции' },
       ),
     );
-    if (path.length > 1) {
-      root.append(
-        h(
-          'div',
-          { class: 'row' },
-          btn('↑ наверх', () => setPath(path.slice(0, -1))),
-        ),
-      );
-    }
   }
-}
-
-function findLeafBox(p: Project, m: WardModule, path: Path) {
-  return layoutModule(p, m).leaves.find(
-    (lb) => lb.path.length === path.length && lb.path.every((v, i) => v === path[i]),
-  );
 }
 
 function parentT(m: WardModule, path: Path): number {
