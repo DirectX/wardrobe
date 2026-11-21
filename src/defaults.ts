@@ -1,4 +1,12 @@
-import type { Cell, FacadeKind, ModuleKind, Project, WallId, WardModule } from './types.ts';
+import type {
+  BoxNode,
+  LeafFace,
+  Project,
+  SplitChild,
+  WallId,
+  WardModule,
+} from './types.ts';
+import { CARCASS_T } from './geometry.ts';
 import { uid } from './types.ts';
 
 export const WALL_LABEL: Record<string, string> = {
@@ -18,109 +26,49 @@ export const FACADE_FILLS: Record<string, string> = {
   сталь: '#9aa3ad',
 };
 
-export const FACADE_LABEL: Record<FacadeKind, string> = {
-  door: 'Дверь',
-  drawer: 'Ящики',
-  panel: 'Панель',
-  glass: 'Стекло',
-};
-
-export const KIND_LABEL: Record<ModuleKind, string> = {
-  wardrobe: 'Шкаф-купе',
-  shelves: 'Полки (открытый)',
+export const FACE_LABEL: Record<LeafFace['kind'], string> = {
+  open: 'Ниша',
+  door: 'Дверца',
   drawers: 'Ящики',
-  open: 'Пустой отсек',
-  'tv-niche': 'Ниша под ТВ',
+  panel: 'Панель',
 };
 
-interface KindDefaults {
-  w: number;
-  depth: number;
-}
+// ---------------------------------------------------------- builders (для пресетов и миграции)
 
-export const KIND_DEFAULTS: Record<ModuleKind, KindDefaults> = {
-  wardrobe: { w: 900, depth: 600 },
-  shelves: { w: 600, depth: 450 },
-  drawers: { w: 700, depth: 600 },
-  open: { w: 500, depth: 600 },
-  'tv-niche': { w: 1100, depth: 450 },
-};
+export const leaf = (face: LeafFace): { type: 'leaf'; id: string; face: LeafFace } => ({
+  type: 'leaf',
+  id: uid('l'),
+  face: { ...face },
+});
 
-export function newCell(p: Project, w: number, over: Partial<Cell> = {}): Cell {
-  return {
-    w: Math.round(w),
-    facade: 'door',
-    hinge: 'left',
-    fill: 'дуб лён',
-    shelves: 4,
-    shelfPitch: null,
-    drawers: 4,
-    ...over,
-  };
-}
+/** вертикальный сплит: доли — относительные размеры */
+export const splitV = (parts: Array<{ size?: number; node: BoxNode }>, t = CARCASS_T): BoxNode => ({
+  type: 'split',
+  dir: 'v',
+  t,
+  children: parts.map((x): SplitChild => ({ size: x.size ?? 1, node: x.node })),
+});
 
-/** Секции по умолчанию для типа модуля. */
-export function defaultCells(kind: ModuleKind, p: Project, w: number, h: number): Cell[] {
-  const cells = cellsUncorrected(kind, p, Math.round(w), h);
-  // остаток от округления — последней секции, чтобы сумма была точной
-  const drift = Math.round(w) - cells.reduce((s, c) => s + c.w, 0);
-  if (cells.length) cells[cells.length - 1].w += drift;
-  return cells;
-}
+export const splitH = (parts: Array<{ size?: number; node: BoxNode }>, t = CARCASS_T): BoxNode => ({
+  type: 'split',
+  dir: 'h',
+  t,
+  children: parts.map((x): SplitChild => ({ size: x.size ?? 1, node: x.node })),
+});
 
-function cellsUncorrected(kind: ModuleKind, p: Project, w: number, h: number): Cell[] {
-  const availH = Math.max(200, h - p.base - 36);
-  switch (kind) {
-    case 'wardrobe': {
-      const n = Math.max(2, Math.round(w / 500));
-      return Array.from({ length: n }, (_, i) =>
-        newCell(p, w / n, {
-          facade: 'door',
-          hinge: i % 2 === 0 ? 'left' : 'right',
-          shelves: Math.max(2, Math.round(availH / 400) - 1),
-        }),
-      );
-    }
-    case 'shelves':
-      return [
-        newCell(p, w, {
-          facade: null,
-          shelves: Math.max(2, Math.round(availH / 350) - 1),
-        }),
-      ];
-    case 'drawers':
-      return [
-        newCell(p, w, {
-          facade: 'drawer',
-          drawers: Math.max(3, Math.round(availH / 240)),
-        }),
-      ];
-    case 'tv-niche':
-      return [newCell(p, w, { facade: null, shelves: 0 })];
-    case 'open':
-      return [newCell(p, w, { facade: null, shelves: 0 })];
-  }
-}
-
-export function newModule(kind: ModuleKind, wall: WallId, from: number, p: Project): WardModule {
-  const d = KIND_DEFAULTS[kind];
-  const h = p.ceiling;
-  const w = Math.min(d.w, p.walls[wall].length);
-  return {
-    id: uid('m'),
-    wall,
-    from,
-    w,
-    h,
-    depth: d.depth,
-    kind,
-    cells: defaultCells(kind, p, w, h),
-  };
-}
+export const newModule = (wall: WallId, from: number, w: number, p: Project): WardModule => ({
+  id: uid('m'),
+  wall,
+  from,
+  w,
+  h: p.ceiling,
+  depth: 450,
+  root: leaf({ kind: 'open', shelves: 0 }),
+});
 
 export function defaultProject(): Project {
   const p: Project = {
-    version: 2,
+    version: 3,
     name: 'Гостиная',
     ceiling: 2700,
     base: 80,
@@ -130,15 +78,62 @@ export function defaultProject(): Project {
     tv: null,
     sockets: [],
   };
-  const m1 = newModule('wardrobe', 'center', 0, p);
-  m1.w = 1300;
-  m1.cells = defaultCells('wardrobe', p, 1300, m1.h);
-  const niche = newModule('tv-niche', 'center', 1300, p);
-  niche.w = 1100;
-  niche.cells = defaultCells('tv-niche', p, 1100, niche.h);
-  const m3 = newModule('wardrobe', 'center', 2400, p);
-  m3.w = 1100;
-  m3.cells = defaultCells('wardrobe', p, 1100, m3.h);
+  const doors = (n: number): BoxNode =>
+    splitV(
+      Array.from({ length: n }, (_, i) => ({
+        node: leaf({
+          kind: 'door',
+          hinge: i % 2 === 0 ? 'left' : 'right',
+          fill: 'дуб лён',
+        }),
+      })),
+    );
+  const m1: WardModule = {
+    id: uid('m'),
+    wall: 'center',
+    from: 0,
+    w: 1300,
+    h: p.ceiling,
+    depth: 600,
+    root: splitH(
+      [
+        { size: 2000, node: doors(2) },
+        { size: p.ceiling - 2000 - 80 - 36, node: splitV([{ node: doors(1) }, { size: 0.5, node: leaf({ kind: 'open', shelves: 2 }) }]) },
+      ],
+      16,
+    ),
+  };
+  const niche: WardModule = {
+    id: uid('m'),
+    wall: 'center',
+    from: 1300,
+    w: 1100,
+    h: p.ceiling,
+    depth: 450,
+    root: splitH(
+      [
+        { size: 1400, node: leaf({ kind: 'open', shelves: 0 }) },
+        { size: 400, node: leaf({ kind: 'drawers', drawers: 2, fill: 'дуб лён' }) },
+        { size: p.ceiling - 1400 - 400 - 80 - 36, node: leaf({ kind: 'open', shelves: 1 }) },
+      ],
+      16,
+    ),
+  };
+  const m3: WardModule = {
+    id: uid('m'),
+    wall: 'center',
+    from: 2400,
+    w: 1100,
+    h: p.ceiling,
+    depth: 600,
+    root: splitH(
+      [
+        { size: 2000, node: doors(2) },
+        { size: p.ceiling - 2000 - 80 - 36, node: doors(1) },
+      ],
+      16,
+    ),
+  };
   p.modules = [m1, niche, m3];
   p.tv = { wall: 'center', centerX: 1850, centerY: 1150, w: 1240, h: 720 };
   p.sockets = [

@@ -1,26 +1,32 @@
-// Программный smoke-тест: открывается по /?autotest, печатает результат в #autotest-result.
-// Headless-регрессия доменной логики (v2: модули из секций).
+// Программный smoke-тест: /?autotest. Регрессия доменной логики v3 (короб + дерево нарезки).
 
 import { store } from './store.ts';
 import { select, ui } from './state.ts';
-import { renderProps } from './panels.ts';
 import {
-  addCell,
   addModule,
   addSocketAt,
-  dragCellBoundary,
+  dragDivider,
   makeNicheUnderTv,
   moveModule,
-  removeCell,
-  resizeModule,
-  setCellWidth,
-  splitCell,
-  toggleCellFacade,
+  removeLeaf,
+  setFace,
+  splitLeaf,
+  toggleFace,
 } from './edit.ts';
-import { cellAt, cellsSum, cornerStart, layoutCells, modulesOn, shelfYs, wallStart } from './geometry.ts';
+import {
+  CARCASS_T,
+  cornerZones,
+  countLeaves,
+  layoutModule,
+  modulesOn,
+  shelfYsIn,
+  wallStart,
+} from './geometry.ts';
 import { validate } from './validate.ts';
 import { migrate } from './migrate.ts';
 import { renderFacade } from './views/facade.ts';
+import { renderProps } from './panels.ts';
+import type { LeafFace, Path, Project } from './types.ts';
 
 const results: string[] = [];
 let failed = 0;
@@ -30,262 +36,323 @@ function check(name: string, cond: boolean): void {
   if (!cond) failed++;
 }
 
+function mod(id: string) {
+  return store.project.modules.find((m) => m.id === id)!;
+}
+function faces(root: Project['modules'][number]['root']): LeafFace[] {
+  const out: LeafFace[] = [];
+  const walk = (n: Project['modules'][number]['root']) => {
+    if (n.type === 'leaf') out.push(n.face);
+    else n.children.forEach((c) => walk(c.node));
+  };
+  walk(root);
+  return out;
+}
+
 export function runAutoTest(): void {
-  // 1. добавление модуля (правая стена: удлиним, левый сценарий — под углом)
+  // 1. контейнер на стене: один открытый отсек, угол огибается
   store.update((pp) => (pp.walls.right.length = 1500));
   const rightBefore = modulesOn(store.project, 'right').length;
-  addModule('drawers', 'right');
+  addModule('right');
   const right = modulesOn(store.project, 'right');
-  check('addModule: +1 на правой стене', right.length === rightBefore + 1);
-  check(
-    'addModule: секции-ячейки созданы',
-    !!right[right.length - 1]?.cells.length && right[right.length - 1].cells.every((c) => c.w > 0),
-  );
-  check(
-    'addModule: сумма секций = ширина модуля',
-    right.every((m) => Math.abs(cellsSum(m) - m.w) <= 1),
-  );
+  const box1 = right[right.length - 1];
+  check('addModule: контейнер добавлен', right.length === rightBefore + 1);
+  check('addModule: один лист-ниша по умолчанию', countLeaves(box1.root) === 1 && faces(box1.root)[0].kind === 'open');
   check(
     'addModule: огибает угловую зону',
-    right[right.length - 1].from >= cornerStart(store.project, 'right'),
+    box1.from >= cornerZones(store.project, 'right').start,
   );
   check('addModule: ошибок нет', validate(store.project).every((i) => i.level !== 'error'));
 
-  // 2. resize модуля пропорционально масштабирует секции
-  const center = modulesOn(store.project, 'center');
-  const [a, b] = center;
-  if (a && b) {
-    store.checkpoint();
-    resizeModule(a.id, 'l', a.from + 400);
-    const aA = modulesOn(store.project, 'center')[0];
-    check('resize: модуль стал уже', aA.w === a.w - 400 && aA.from === a.from + 400);
-    check('resize: секции отмасштабированы без расхождений', Math.abs(cellsSum(aA) - aA.w) <= 1);
-    check('resize: секции не схлопнуты', aA.cells.every((c) => c.w >= 100));
-    store.undo();
+  // 2. раскладка: листья точно заполняют нутро, разделитель по толщине
+  {
+    const { leaves, dividers } = layoutModule(store.project, box1);
+    const box = store.project;
+    void box;
+    check('layout: 1 лист', leaves.length === 1);
+    const lb = leaves[0];
+    check(
+      'layout: лист = нутро короба',
+      Math.abs(lb.x - (box1.from + CARCASS_T)) < 1 && Math.abs(lb.w - (box1.w - 2 * CARCASS_T)) < 1,
+    );
+    check('layout: разделителей нет', dividers.length === 0);
   }
 
-  // 3. перемещение с выталкиванием
-  if (a && b) {
-    store.checkpoint();
-    moveModule(b.id, a.from + 50);
-    const now = modulesOn(store.project, 'center');
-    const overlaps = now.some((m, i) => i > 0 && m.from < now[i - 1].from + now[i - 1].w - 0.5);
-    check('move: без наложений', !overlaps);
-    store.undo();
+  // 3. split v → два листа + 1 разделитель; инвариант площади
+  splitLeaf(box1.id, [], 'v');
+  {
+    const m = mod(box1.id);
+    const { leaves, dividers } = layoutModule(store.project, m);
+    check('splitV: 2 листа', leaves.length === 2);
+    check('splitV: 1 разделитель 18 мм', dividers.length === 1 && dividers[0].w === CARCASS_T);
+    const innerW = m.w - 2 * CARCASS_T;
+    check(
+      'splitV: дети + перегородка = ширина нутра',
+      Math.abs(leaves.reduce((s, l) => s + l.w, 0) + dividers.length * CARCASS_T - innerW) < 1,
+    );
   }
 
-  // 4. деление секции и инвариант суммы
-  const wardrobe = modulesOn(store.project, 'center').find((m) => m.cells.length >= 2);
-  if (wardrobe) {
-    const n0 = wardrobe.cells.length;
-    splitCell(wardrobe.id, 0);
-    let m = modulesOn(store.project, 'center').find((x) => x.id === wardrobe.id)!;
-    check('splitCell: +1 секция', m.cells.length === n0 + 1);
-    check('splitCell: сумма не поплыла', Math.abs(cellsSum(m) - m.w) <= 1);
-
-    setCellWidth(wardrobe.id, 0, m.cells[0].w + 200);
-    m = modulesOn(store.project, 'center').find((x) => x.id === wardrobe.id)!;
-    check('setCellWidth: инвариант суммы сохранён', Math.abs(cellsSum(m) - m.w) <= 1);
-    check('setCellWidth: сосед не отрицательный', m.cells.every((c) => c.w >= 100));
-
-    // тяга границы между секциями 0 и 1
-    const pairBefore = m.cells[0].w + m.cells[1].w;
-    dragCellBoundary(wardrobe.id, 0, m.from + m.cells[0].w + 150);
-    m = modulesOn(store.project, 'center').find((x) => x.id === wardrobe.id)!;
-    check('dragCellBoundary: сумма пары постоянна', m.cells[0].w + m.cells[1].w === pairBefore);
-
-    const nAft = m.cells.length;
-    removeCell(wardrobe.id, 0);
-    m = modulesOn(store.project, 'center').find((x) => x.id === wardrobe.id)!;
-    check('removeCell: -1 секция', m.cells.length === nAft - 1);
-    check('removeCell: ширина ушла соседу', Math.abs(cellsSum(m) - m.w) <= 1);
-  } else {
-    check('splitCell: нашёлся модуль с 2+ секциями', false);
+  // 4. вложенный split h внутри правого листа
+  splitLeaf(box1.id, [1], 'h');
+  {
+    const m = mod(box1.id);
+    const { leaves, dividers } = layoutModule(store.project, m);
+    check('splitH(внутри): 3 листа', leaves.length === 3);
+    check('splitH: путей разделителей 2', dividers.length === 2);
+    const hDivider = dividers.find((d) => d.dir === 'h');
+    check('splitH: горизонтальный разделитель найден', !!hDivider);
   }
 
-  // 5. добавление секции делит самую широкую
-  const m2 = modulesOn(store.project, 'center').find((x) => x.cells.length >= 1)!;
-  const nBefore = m2.cells.length;
-  const widest = Math.max(...m2.cells.map((c) => c.w));
-  addCell(m2.id);
-  const m2a = modulesOn(store.project, 'center').find((x) => x.id === m2.id)!;
-  check(
-    'addCell: секций стало больше или сообщение о тесноте',
-    m2a.cells.length > nBefore || store.project.modules.length === store.project.modules.length,
-  );
-  if (m2a.cells.length > nBefore) {
-    check('addCell: сумма стабильна', Math.abs(cellsSum(m2a) - m2a.w) <= 1);
-    check('addCell: делилась именно самая широкая', Math.max(...m2a.cells.map((c) => c.w)) < widest);
+  // 5. faces: ящики и ниша с шагом
+  {
+    const m = mod(box1.id);
+    setFace(box1.id, [0], { kind: 'drawers', drawers: 4, fill: 'дуб лён' });
+    setFace(box1.id, [1, 0], { kind: 'open', shelves: 3 });
+    setFace(box1.id, [1, 1], { kind: 'door', hinge: 'right' });
+    const f = faces(mod(box1.id).root);
+    check('faces: типы проставлены', f.some((x) => x.kind === 'drawers') && f.some((x) => x.kind === 'door'));
+    const open = f.find((x) => x.kind === 'open');
+    check('faces: ниша c полками', open?.kind === 'open' && open.shelves === 3);
+    const { leaves } = layoutModule(store.project, mod(box1.id));
+    const openBox = leaves.find((l) => l.path.join('.') === '1.0')!;
+    const ys = shelfYsIn(openBox.y, openBox.h, 3, null);
+    check('shelfYsIn: 3 полки внутри листа', ys.length === 3 && ys.every((y) => y > openBox.y && y < openBox.y + openBox.h));
+    const ysP = shelfYsIn(openBox.y, openBox.h, 0, 300);
+    check(
+      'shelfYsIn: шаг 300',
+      ysP.length >= 2 && ysP[1] - ysP[0] === 300,
+    );
   }
 
-  // 6. фасад вкл/выкл двойным кликом
-  const openTarget = modulesOn(store.project, 'center').find((x) => x.cells.length >= 1)!;
-  const mid = openTarget.from + Math.round(openTarget.cells[0].w / 2);
-  const y = openTarget.h - 200;
-  const facadeBefore = cellAt(store.project, openTarget, mid, y)?.facade;
-  toggleCellFacade(openTarget.id, mid, y);
-  const facadeAfter = cellAt(store.project, openTarget, mid, y)?.facade;
-  check('toggleCellFacade: состояние фасада переключилось', facadeBefore !== facadeAfter);
+  // 6. drag разделителя v: сумма пары постоянна
+  {
+    const m = mod(box1.id);
+    const before = layoutModule(store.project, m);
+    const d = before.dividers.find((x) => x.dir === 'v' && x.path.length === 0)!;
+    const pairBefore = d.pairLen;
+    const pos = d.x + d.w / 2 + 100; // сдвигаем вправо на 100
+    dragDivider(box1.id, [], 0, pos);
+    const after = layoutModule(store.project, mod(box1.id));
+    const d2 = after.dividers.find((x) => x.dir === 'v' && x.path.length === 0)!;
+    check('dragDivider: пара постоянна', Math.abs(d2.pairLen - pairBefore) < 1.5);
+    check('dragDivider: сдвинулся', Math.abs(d2.x - d.x - 100) < 2);
+    // в угол пары — не впускает ниже минимума
+    dragDivider(box1.id, [], 0, d2.x + d2.w / 2 - 10_000);
+    const d3 = layoutModule(store.project, mod(box1.id)).dividers.find((x) => x.dir === 'v' && x.path.length === 0)!;
+    const leftLeaf = layoutModule(store.project, mod(box1.id)).leaves.find((l) => l.path.join('.') === '0')!;
+    check('dragDivider: минимальный лист соблюдён', leftLeaf.w >= 79);
+    void d3;
+  }
 
-  // 7. ниша под ТВ даёт открытую секцию и снимает конфликт
-  const conflictBefore = validate(store.project).filter((i) => i.message.includes('ТВ перекрыт')).length;
-  makeNicheUnderTv();
-  const tv = store.project.tv!;
-  const behind = modulesOn(store.project, tv.wall).find(
-    (m) => m.from <= tv.centerX && m.from + m.w >= tv.centerX,
-  );
-  check('niche: под ТВ есть модуль', !!behind);
-  check('niche: секция за ТВ открыта', !!behind && cellAt(store.project, behind, tv.centerX, tv.centerY)?.facade === null);
-  check(
-    'niche: конфликт устранён',
-    conflictBefore > 0 ? validate(store.project).every((i) => !i.message.includes('ТВ перекрыт')) : true,
-  );
+  // 7. removeLeaf схлопывает сплит
+  {
+    const m = mod(box1.id);
+    const n = countLeaves(m.root);
+    removeLeaf(box1.id, [1, 0]);
+    check('removeLeaf: листов -1', countLeaves(mod(box1.id).root) === n - 1);
+    removeLeaf(box1.id, [1]);
+    check('removeLeaf: сплит схлопнулся в лист', mod(box1.id).root.type === 'leaf');
+    check('removeLeaf: последний лист не удаляется', (() => {
+      removeLeaf(box1.id, []);
+      return mod(box1.id).root.type === 'leaf';
+    })());
+  }
 
-  // 8. полки: высота полки задаёт раскладку
-  const shelfMod = store.project.modules.find((m) => m.cells.some((c) => c.facade === null))!;
-  if (shelfMod) {
+  // 8. toggleFace
+  {
+    setFace(box1.id, [], { kind: 'door', hinge: 'left' });
+    toggleFace(box1.id, []);
+    check('toggleFace: door → open', mod(box1.id).root.type === 'leaf' && (mod(box1.id).root as { face: LeafFace }).face.kind === 'open');
+    toggleFace(box1.id, []);
+    check('toggleFace: open → door', mod(box1.id).root.type === 'leaf' && (mod(box1.id).root as { face: LeafFace }).face.kind === 'door');
+  }
+
+  // 9. ТВ: ниша ок, фасад — ошибка; ниша под ТВ — авто
+  {
+    const tv = store.project.tv!;
+    const tvMod = modulesOn(store.project, 'center').find(
+      (m) => m.from <= tv.centerX && m.from + m.w >= tv.centerX,
+    )!;
+    const hitLeaf = layoutModule(store.project, tvMod).leaves.find(
+      (l) =>
+        tv.centerX >= l.x && tv.centerX <= l.x + l.w &&
+        tv.centerY >= l.y && tv.centerY <= l.y + l.h,
+    )!;
+    check('tv: лист за ТВ найден', !!hitLeaf && hitLeaf.leaf.face.kind === 'open');
+    setFace(tvMod.id, hitLeaf.path, { kind: 'door', hinge: 'left' });
+    check('tv: фасад за ТВ — ошибка', validate(store.project).some((i) => i.message.includes('ТВ перекрыт')));
+    makeNicheUnderTv();
+    const niche = modulesOn(store.project, tv.wall).find((m) => m.from <= tv.centerX && m.from + m.w >= tv.centerX)!;
+    check('tv: ниша под ТВ — открыто', faces(niche.root).every((f) => f.kind === 'open') || (() => {
+      const hit = layoutModule(store.project, niche).leaves.find((l) => tv.centerX >= l.x && tv.centerX <= l.x + l.w && tv.centerY >= l.y && tv.centerY <= l.y + l.h);
+      return hit?.leaf.face.kind === 'open';
+    })());
+    check('tv: конфликт устранён', validate(store.project).every((i) => !i.message.includes('ТВ перекрыт')));
+  }
+
+  // 10. симметричные углы: боковой контейнер в угол резервирует зону ЦЕНТРАЛЬНОЙ стены
+  {
+    const Lc = store.project.walls.center.length;
+    const tv = store.project.tv!;
+    // убираем нишу под ТВ (создана в тесте 9), чтобы свободно двигать правый ряд
+    const nicheId = modulesOn(store.project, 'center').find(
+      (m) => m.from <= tv.centerX && m.from + m.w >= tv.centerX,
+    )?.id;
     store.update((pp) => {
-      const m = pp.modules.find((x) => x.id === shelfMod.id)!;
-      const c = m.cells.find((c) => c.facade === null)!;
-      c.shelfPitch = 400;
-      c.shelves = 0;
+      pp.modules = pp.modules.filter((m) => m.id !== nicheId);
     });
-    const mm = store.project.modules.find((x) => x.id === shelfMod.id)!;
-    const c = mm.cells.find((c) => c.facade === null)!;
-    const ys = shelfYs(mm, store.project, c);
+    const m3 = modulesOn(store.project, 'center').sort((a, b) => b.from - a.from)[0];
+    store.update((pp) => {
+      const t = pp.modules.find((m) => m.id === m3.id);
+      if (t) t.from = 1900; // отодвигаем от правого угла, без наложений
+    });
+    check('corner: правый угол центральной свободен', cornerZones(store.project, 'right').start === 0);
+
+    addModule('right');
+    const side = modulesOn(store.project, 'right').sort((a, b) => a.from - b.from)[0];
+    check('corner: боковой контейнер встал в угол', side.from === 0);
+    const zc = cornerZones(store.project, 'center');
+    check('corner: зона на центральной = глубина бокового', zc.end === side.depth);
+
+    store.checkpoint();
+    moveModule(m3.id, Lc); // тянем в правый угол — должен упереться в зону
+    const m3c = mod(m3.id);
     check(
-      'shelfPitch: полки идут с шагом 400',
-      ys.length >= 2 && ys[1] - ys[0] === 400,
+      'corner: ряд упёрся в угловую зону',
+      Math.abs(m3c.from + m3c.w - (Lc - side.depth)) < 1,
     );
+
+    // форсируем нарушение — валидатор ловит
+    store.update((pp) => {
+      const t = pp.modules.find((m) => m.id === m3.id);
+      if (t) t.from = Lc - t.w;
+    });
+    check('corner: валидатор ловит наезд на зону угла', validate(store.project).some((i) => i.message.includes('заходит в угол')));
+    store.undo(); // откат форсирования
+    store.undo(); // откат moveModule
   }
 
-  // 9. розетки, undo/redo
-  const sockBefore = store.project.sockets.length;
-  addSocketAt('right', 100, 300);
-  check('socket: добавлена', store.project.sockets.length === sockBefore + 1);
-  const p1 = JSON.stringify(store.project);
-  store.undo();
-  check('undo: откат', JSON.stringify(store.project) !== p1);
-  store.redo();
-  check('redo: вернул', JSON.stringify(store.project) === p1);
+  // 11. розетки + undo/redo
+  {
+    const n = store.project.sockets.length;
+    addSocketAt('left', 100, 300);
+    check('socket: добавлена', store.project.sockets.length === n + 1);
+    const p1 = JSON.stringify(store.project);
+    store.undo();
+    check('undo: откат', JSON.stringify(store.project) !== p1);
+    store.redo();
+    check('redo: вернул', JSON.stringify(store.project) === p1);
+  }
 
-  // 10. миграция v1 → v2
-  const v1 = {
-    version: 1,
-    name: 'old',
-    ceiling: 2600,
-    base: 80,
-    grid: 50,
-    walls: { left: { length: 500 }, center: { length: 2000 }, right: { length: 500 } },
-    modules: [
-      {
-        id: 'm-old1',
-        wall: 'center',
-        from: 0,
-        w: 1000,
-        h: 2600,
-        depth: 600,
-        kind: 'wardrobe',
-        facade: [{ weight: 1, cells: [{ type: 'door', hinge: 'left' }, { type: 'door', hinge: 'right' }] }],
-      },
-      {
-        id: 'm-old2',
-        wall: 'center',
-        from: 1000,
-        w: 800,
-        h: 2600,
-        depth: 600,
-        kind: 'drawers',
-        facade: [
-          { weight: 1, cells: [{ type: 'drawer' }] },
-          { weight: 1, cells: [{ type: 'drawer' }] },
-          { weight: 1, cells: [{ type: 'drawer' }] },
-        ],
-      },
-    ],
-    tv: null,
-    sockets: [],
-  };
-  const migrated = migrate(structuredClone(v1));
-  const old1 = migrated?.modules.find((m) => m.id === 'm-old1');
-  const old2 = migrated?.modules.find((m) => m.id === 'm-old2');
-  check('migrate: распознан v1', !!migrated && migrated.version === 2);
-  check('migrate: doors → 2 секции с дверьми', !!old1 && old1.cells.length === 2 && old1.cells.every((c) => c.facade === 'door'));
-  check('migrate: drawers → 1 секция ящиков', !!old2 && old2.cells.length === 1 && old2.cells[0].facade === 'drawer' && old2.cells[0].drawers === 3);
-  check('migrate: суммы ширин сходятся', !!migrated && migrated.modules.every((m) => Math.abs(cellsSum(m) - m.w) <= 2));
-  check('migrate: идемпотентна для v2', !!migrate(migrated) && migrate(migrated)!.version === 2);
+  // 12. миграция v2 → v3
+  {
+    const v2 = {
+      version: 2,
+      name: 'old',
+      ceiling: 2600,
+      base: 80,
+      grid: 50,
+      walls: { left: { length: 500 }, center: { length: 2000 }, right: { length: 500 } },
+      modules: [
+        {
+          id: 'm-a',
+          wall: 'center',
+          from: 0,
+          w: 1000,
+          h: 2600,
+          depth: 600,
+          cells: [
+            { w: 500, facade: 'door', hinge: 'left', shelves: 4, shelfPitch: null, drawers: 4 },
+            { w: 500, facade: null, shelves: 5, shelfPitch: null, drawers: 4 },
+          ],
+        },
+        {
+          id: 'm-b',
+          wall: 'center',
+          from: 1000,
+          w: 800,
+          h: 2600,
+          depth: 600,
+          cells: [{ w: 800, facade: 'drawer', hinge: 'left', shelves: 0, shelfPitch: null, drawers: 5 }],
+        },
+      ],
+      tv: null,
+      sockets: [],
+    };
+    const p3 = migrate(structuredClone(v2));
+    check('migrate: v2 распознан', !!p3 && p3.version === 3);
+    const a = p3?.modules.find((m) => m.id === 'm-a');
+    const b = p3?.modules.find((m) => m.id === 'm-b');
+    check('migrate: 2 секции → split v с дверцей и нишей', !!a && a.root.type === 'split' && (() => {
+      const f = faces(a.root);
+      return f.length === 2 && f[0].kind === 'door' && f[1].kind === 'open';
+    })());
+    check('migrate: ящики → лист drawers', !!b && b.root.type === 'leaf' && (b.root as { face: LeafFace }).face.kind === 'drawers');
+    check('migrate: идемпотентна', !!p3 && migrate(structuredClone(p3))?.version === 3);
+  }
 
-  // 11. угловые зоны
-  store.update((pp) => {
-    const m1 = pp.modules.find((x) => x.wall === 'center' && x.from === 0);
-    if (m1) m1.depth = 100;
-  });
-  const csL = cornerStart(store.project, 'left');
-  const csR = cornerStart(store.project, 'right');
-  check('corner: зона = глубина центрального ряда у угла', csL === 100 && csR === 600);
-  addModule('wardrobe', 'left');
-  const lm = modulesOn(store.project, 'left').slice(-1)[0];
-  check('corner: левая боковая стартует из-за зоны', !!lm && lm.from === 100);
-  const rm = modulesOn(store.project, 'right').slice(-1)[0];
-  store.checkpoint();
-  moveModule(rm.id, 0);
-  check(
-    'corner: перетаскивание не впускает в угол',
-    (modulesOn(store.project, 'right').find((m) => m.id === rm.id)?.from ?? -1) >= csR,
-  );
-  store.undo();
-  store.update((pp) => {
-    const t = pp.modules.find((m) => m.id === rm.id);
-    if (t) t.from = 0;
-  });
-  check('corner: валидатор ловит заезд в угол', validate(store.project).some((i) => i.message.includes('угловую зону')));
-  store.undo();
-
-  // 12. геометрия рендера: фасады секций на месте корпуса (регрессия двойного from)
-  renderFacade();
-  const facadeSvg = document.getElementById('facade');
-  let renderChecked = 0;
-  let renderOk = !!facadeSvg;
-  for (const m of store.project.modules) {
-    const x0 = wallStart(store.project)[m.wall];
-    const layout = layoutCells(store.project, m);
-    const g = facadeSvg?.querySelector(`g[data-hit="mod"][data-id="${m.id}"]`);
-    if (!g) {
-      renderOk = false;
-      continue;
-    }
-    g.querySelectorAll(':scope > g[data-hit="cell"]').forEach((cg) => {
-      const idx = Number(cg.getAttribute('data-idx'));
-      const cl = layout[idx];
-      if (!cl || cl.cell.facade === null) return;
-      const rect = cg.querySelector('rect');
-      if (!rect) {
-        renderOk = false;
-        return;
-      }
-      const xAttr = parseFloat(rect.getAttribute('x') ?? 'NaN');
-      renderChecked++;
+  // 13. геометрия рендера: лист лежит внутри корпуса (с зеркалом левой стены)
+  {
+    // удлиняем левую стену, чтобы после угловой зоны осталось место под контейнер
+    store.update((pp) => {
+      pp.walls.left.length = 1800;
+    });
+    const zLeft = cornerZones(store.project, 'left').start;
+    check('render: на левой стене есть место после угла', 1800 - zLeft >= 200);
+    addModule('left');
+    const lm = modulesOn(store.project, 'left').slice(-1)[0];
+    if (!lm) {
+      check('render: на левой стене есть контейнер', false);
+    } else {
+    setFace(lm.id, [], { kind: 'door', hinge: 'left' });
+    renderFacade();
+    const facadeSvg = document.getElementById('facade');
+    let checked = 0;
+    let ok = !!facadeSvg;
+    for (const m of store.project.modules) {
+      const x0 = wallStart(store.project)[m.wall];
       const len = store.project.walls[m.wall].length;
-      const expX = m.wall === 'left' ? x0 + len - (cl.x + cl.w) : x0 + cl.x;
-      if (Math.abs(xAttr - expX) > 1.5) renderOk = false;
-    });
+      const mirror = m.wall === 'left';
+      const { leaves } = layoutModule(store.project, m);
+      const g = facadeSvg?.querySelector(`g[data-hit="mod"][data-id="${m.id}"]`);
+      if (!g) {
+        ok = false;
+        continue;
+      }
+      for (const lb of leaves) {
+        if (lb.leaf.face.kind === 'open') continue;
+        const path = lb.path.join('.');
+        const rect = g.querySelector(`g[data-hit="leaf"][data-path="${path}"] rect`);
+        if (!rect) continue;
+        const xAttr = parseFloat(rect.getAttribute('x') ?? 'NaN');
+        const expX = mirror ? x0 + len - (lb.x + lb.w) : x0 + lb.x;
+        checked++;
+        if (Math.abs(xAttr - expX) > 1.5) ok = false;
+      }
+    }
+    check(`render: листы на месте корпуса (проверено ${checked})`, ok && checked > 0);
+    }
   }
-  check(`render: фасады секций совпадают с корпусом (проверено ${renderChecked})`, renderOk && renderChecked > 0);
 
-  // 13. панель: спиннер полок — шаг 1 и границы (регрессия ±10)
-  const openM = store.project.modules.find((mm) => mm.cells.some((c) => c.facade === null && !c.shelfPitch));
-  if (openM) {
-    select({ kind: 'module', id: openM.id });
-    ui.cell = openM.cells.findIndex((c) => c.facade === null && !c.shelfPitch);
-    const propsEl = document.getElementById('props');
-    if (propsEl) renderProps(propsEl);
-    check(
-      'панель: спиннер полок step=1 с границами 0..20',
-      !!document.querySelector('#props input[step="1"][min="0"][max="20"]'),
-    );
-    select(null);
-  } else {
-    check('панель: найдена открытая секция для проверки спиннера', false);
+  // 14. панель: спиннер полок step=1 (регрессия ±10)
+  {
+    const openM = store.project.modules.find((m) => {
+      const { leaves } = layoutModule(store.project, m);
+      return leaves.some((l) => l.leaf.face.kind === 'open' && !l.leaf.face.shelfPitch);
+    });
+    const openLb = openM && layoutModule(store.project, openM).leaves.find((l) => l.leaf.face.kind === 'open' && !l.leaf.face.shelfPitch);
+    if (openM && openLb) {
+      select({ kind: 'module', id: openM.id }, openLb.path as Path);
+      const propsEl = document.getElementById('props');
+      if (propsEl) renderProps(propsEl);
+      check(
+        'панель: спиннер полок step=1 0..20',
+        !!document.querySelector('#props input[step="1"][min="0"][max="20"]'),
+      );
+      select(null);
+    } else {
+      check('панель: найдена ниша без шага', false);
+    }
   }
 
   // инвариант финальный

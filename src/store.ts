@@ -2,13 +2,13 @@ import type { Project } from './types.ts';
 import { defaultProject } from './defaults.ts';
 import { migrate } from './migrate.ts';
 
-const LS_KEY = 'wardrobe:project:v2';
-const LEGACY_KEY = 'wardrobe:project:v1';
+const LS_KEY = 'wardrobe:project:v3';
+const LEGACY_KEYS = ['wardrobe:project:v2', 'wardrobe:project:v1'];
 
 type Listener = () => void;
 
 function loadFromStorage(): Project | null {
-  for (const key of [LS_KEY, LEGACY_KEY]) {
+  for (const key of [LS_KEY, ...LEGACY_KEYS]) {
     try {
       const raw = localStorage.getItem(key);
       if (!raw) continue;

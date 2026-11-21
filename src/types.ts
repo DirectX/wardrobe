@@ -1,38 +1,74 @@
-// Доменная модель v2. Все размеры — в миллиметрах.
-// Базовая единица — ячейка (секция) модуля: ширина, полки, опциональный фасад.
+// Доменная модель v3. Все размеры — в миллиметрах.
+// Идея: модуль — это короб (контейнер), внутри — дерево нарезки:
+//_split_ (вертикальная/горизонтальная, с толщиной перегородки) и _лист_ (отсек
+// с лицом: ниша с полками, дверь, ящики, панель).
 
 export type WallId = 'left' | 'center' | 'right';
 
-export type FacadeKind = 'door' | 'drawer' | 'panel' | 'glass';
+// ---------------------------------------------------------------- faces
 
-export interface Cell {
-  /** ширина секции, мм; сумма ширин ячеек = ширина модуля */
-  w: number;
-  /** null — открытая секция (полки на виду) */
-  facade: FacadeKind | null;
-  hinge: 'left' | 'right';
-  /** ключ палитры FACADE_FILLS или hex */
-  fill?: string;
-  /** число полок при ручной раскладке */
+export interface LeafOpen {
+  kind: 'open';
+  /** ниша: видно нутро и полки */
   shelves: number;
-  /** если задано — высота одного отсека, полки считаются по ней */
-  shelfPitch: number | null;
-  /** число ящиков для facade='drawer' */
+/** если задано — шаг полки от низа отсека */
+  shelfPitch?: number | null;
+}
+export interface LeafDoor {
+  kind: 'door';
+  hinge: 'left' | 'right';
+  /** стеклянная створка */
+  glass?: boolean;
+  fill?: string;
+}
+export interface LeafDrawers {
+  kind: 'drawers';
+  /** число выдвижных ящиков на высоту отсека */
   drawers: number;
+  fill?: string;
+}
+export interface LeafPanel {
+  kind: 'panel';
+  fill?: string;
 }
 
-export type ModuleKind = 'wardrobe' | 'shelves' | 'drawers' | 'open' | 'tv-niche';
+export type LeafFace = LeafOpen | LeafDoor | LeafDrawers | LeafPanel;
+
+// ---------------------------------------------------------------- дерево
+
+export interface LeafNode {
+  type: 'leaf';
+  id: string;
+  face: LeafFace;
+}
+
+export interface SplitChild {
+  /** размер вдоль оси сплита (мм, относительный — layout нормализует под короб) */
+  size: number;
+  node: BoxNode;
+}
+
+export interface SplitNode {
+  type: 'split';
+  /** v: дети слева направо; h: сверху вниз */
+  dir: 'v' | 'h';
+  /** толщина перегородки между детьми */
+  t: number;
+  children: SplitChild[];
+}
+
+export type BoxNode = LeafNode | SplitNode;
+
+// ---------------------------------------------------------------- проект
 
 export interface WardModule {
   id: string;
   wall: WallId;
-  /** левый торец вдоль стены (для боковых стен — от внутреннего угла) */
   from: number;
   w: number;
   h: number;
   depth: number;
-  kind: ModuleKind;
-  cells: Cell[];
+  root: BoxNode;
 }
 
 export interface TvSpec {
@@ -55,10 +91,9 @@ export interface WallSpec {
 }
 
 export interface Project {
-  version: 2;
+  version: 3;
   name: string;
   ceiling: number;
-  /** плинтус (цколь), мм */
   base: number;
   grid: number;
   walls: Record<WallId, WallSpec>;
@@ -75,4 +110,50 @@ export interface Issue {
 
 export function uid(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ---------------------------------------------------------------- утилиты дерева
+
+export type Path = number[];
+
+export function pathEq(a: Path | null, b: Path | null): boolean {
+  if (!a || !b) return a === b || (!a && !b);
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+export function getNode(root: BoxNode, path: Path): BoxNode | null {
+  let n: BoxNode = root;
+  for (const i of path) {
+    if (n.type !== 'split' || i < 0 || i >= n.children.length) return null;
+    n = n.children[i].node;
+  }
+  return n;
+}
+
+export function parentSplit(root: BoxNode, path: Path): { split: SplitNode; index: number } | null {
+  if (path.length === 0) return null;
+  const parentPath = path.slice(0, -1);
+  const parent = getNode(root, parentPath);
+  const index = path[path.length - 1];
+  if (parent?.type === 'split' && index >= 0 && index < parent.children.length) {
+    return { split: parent, index };
+  }
+  return null;
+}
+
+export function newLeaf(face?: Partial<LeafFace> & { kind?: LeafFace['kind'] }): LeafNode {
+  const kind = face?.kind ?? 'open';
+  const base: LeafFace =
+    kind === 'door'
+      ? { kind: 'door', hinge: 'left', ...(face as object) }
+      : kind === 'drawers'
+        ? { kind: 'drawers', drawers: 3, ...(face as object) }
+        : kind === 'panel'
+          ? { kind: 'panel', ...(face as object) }
+          : { kind: 'open', shelves: 0, shelfPitch: null, ...(face as object) };
+  return { type: 'leaf', id: uid('l'), face: base as LeafFace };
+}
+
+export function isLeafFrontOpen(node: BoxNode | null): boolean {
+  return !!node && node.type === 'leaf' && node.face.kind === 'open';
 }

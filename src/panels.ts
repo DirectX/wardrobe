@@ -1,28 +1,32 @@
 import { store } from './store.ts';
 import { select, ui, renderAll } from './state.ts';
 import {
-  addCell,
   addModule,
   deleteSelected,
   duplicateModule,
   makeNicheUnderTv,
-  removeCell,
-  setCellWidth,
-  setModuleKind,
-  splitCell,
+  removeLeaf,
+  setDividerT,
+  setFace,
+  splitLeaf,
 } from './edit.ts';
-import {
-  FACADE_FILLS,
-  FACADE_LABEL,
-  KIND_LABEL,
-  WALL_LABEL,
-  defaultProject,
-} from './defaults.ts';
-import { WALLS, cellsSum, shelfCount } from './geometry.ts';
+import { FACADE_FILLS, FACE_LABEL, WALL_LABEL, defaultProject } from './defaults.ts';
+import { WALLS, cornerZones, countLeaves, layoutModule } from './geometry.ts';
 import { validate } from './validate.ts';
 import { fitFacade } from './views/facade.ts';
 import { openJson, exportPng, saveJson } from './io.ts';
-import type { Cell, FacadeKind, ModuleKind, Project, SocketSpec, TvSpec, WallId, WardModule } from './types.ts';
+import type {
+  BoxNode,
+  LeafDrawers,
+  LeafFace,
+  LeafOpen,
+  Path,
+  Project,
+  SocketSpec,
+  TvSpec,
+  WallId,
+  WardModule,
+} from './types.ts';
 
 // ------------------------------------------------------------------ helpers
 
@@ -67,7 +71,6 @@ function fieldNum(
   return h('label', { class: 'field' }, h('span', {}, label), input);
 }
 
-/** Числовое поле, допускающее пустое значение (пусто = null). */
 function fieldNumOpt(
   label: string,
   value: number | null,
@@ -224,7 +227,6 @@ export function initToolbar(root: HTMLElement): void {
 
 export function renderLibrary(root: HTMLElement): void {
   root.innerHTML = '';
-  const kinds = Object.keys(KIND_LABEL) as ModuleKind[];
   const seg = h('div', { class: 'seg' });
   for (const w of WALLS) {
     const b = btn(WALL_SHORT[w], () => {
@@ -234,15 +236,15 @@ export function renderLibrary(root: HTMLElement): void {
     if (ui.wall === w) b.classList.add('active');
     seg.append(b);
   }
-  root.append(h('h3', {}, 'Модули'), h('div', { class: 'hint' }, 'Добавить на стену:'), seg);
-  for (const k of kinds) {
-    root.append(btn(KIND_LABEL[k], () => addModule(k, ui.wall), `На стену: ${WALL_LABEL[ui.wall]}`));
-  }
   root.append(
+    h('h3', {}, 'Стенка'),
+    h('div', { class: 'hint' }, 'Поставить на стену:'),
+    seg,
+    btn('+ Пустой отсек', () => addModule(ui.wall), 'Контейнер на активной стене'),
     h(
       'div',
       { class: 'hint pad-top' },
-      'Клик по секции — выбрать; жёлтые ручки — делить ширину между секциями; двойной клик по секции — вкл/выкл фасад; двойной клик по стене — шкаф в этом месте.',
+      'Клик по отсеку — выбрать. Жёлтые грифы — тяга перегородок. Двойной клик по отсеку — ниша/дверца. Двойной клик по стене — контейнер в этом месте. Внутри отсеков задавайте нарезку и фасады.',
     ),
   );
 }
@@ -261,10 +263,10 @@ export function renderProps(root: HTMLElement): void {
       h(
         'div',
         { class: 'hint' },
-        `Стен: 3 · Модулей: ${p.modules.length} · Розеток: ${p.sockets.length}`,
+        `Стен: 3 · Контейнеров: ${p.modules.length} · Розеток: ${p.sockets.length}`,
         h('br'),
         h('br'),
-        'Кликните модуль, ТВ или розетку. Перетаскивание — перемещение, синие ручки — ширина модуля, жёлтые — границы секций.',
+        'Поставьте «Пустой отсек» на стену, затем кликайте отсеки и режьте их: перегородки, ниши, ящики, дверцы.',
       ),
     );
     return;
@@ -296,7 +298,7 @@ export function renderProps(root: HTMLElement): void {
       h(
         'div',
         { class: 'row' },
-        btn('Ниша под ТВ', () => makeNicheUnderTv(), 'Освободить место и сделать открытую секцию'),
+        btn('Ниша под ТВ', () => makeNicheUnderTv(), 'Вырезать контейнер с открытым отсеком'),
         btn('✕ Убрать ТВ', () => deleteSelected()),
       ),
     );
@@ -329,20 +331,15 @@ export function renderProps(root: HTMLElement): void {
 function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
   const m = p.modules.find((x) => x.id === id);
   if (!m) return;
-  root.append(h('h4', {}, KIND_LABEL[m.kind]));
+  root.append(h('h4', {}, 'Контейнер'));
 
   const patch = (fn: (mm: WardModule) => void) =>
     store.update((pp) => {
       const t = pp.modules.find((x) => x.id === m.id);
       if (t) fn(t);
     });
-  const setCell = (idx: number, fn: (cell: Cell) => void) =>
-    store.update((pp) => {
-      const t = pp.modules.find((x) => x.id === m.id);
-      const c = t?.cells[idx];
-      if (c) fn(c);
-    });
 
+  const z = cornerZones(p, m.wall);
   root.append(
     fieldSelect(
       'Стена',
@@ -351,25 +348,11 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
       (v) =>
         patch((t) => {
           t.wall = v as WallId;
-          t.from = Math.min(t.from, p.walls[v as WallId].length - t.w);
+          t.from = Math.max(cornerZones(p, v as WallId).start, Math.min(t.from, p.walls[v as WallId].length - t.w - cornerZones(p, v as WallId).end));
         }),
     ),
-    fieldSelect(
-      'Тип',
-      m.kind,
-      (Object.keys(KIND_LABEL) as ModuleKind[]).map((k): [string, string] => [k, KIND_LABEL[k]]),
-      (v) => setModuleKind(m.id, v as ModuleKind),
-    ),
-    fieldNum('Отступ, мм', m.from, (v) => patch((t) => (t.from = Math.max(0, v)))),
-    fieldNum('Ширина, мм', m.w, (v) => {
-      const w = Math.max(200, v);
-      patch((t) => {
-        t.w = w;
-        for (const c of t.cells) c.w = Math.round(w / t.cells.length);
-        const drift = w - cellsSum(t);
-        t.cells[t.cells.length - 1].w += drift;
-      });
-    }),
+    fieldNum('Отступ, мм', m.from, (v) => patch((t) => (t.from = Math.max(z.start, v)))),
+    fieldNum('Ширина, мм', m.w, (v) => patch((t) => (t.w = Math.max(200, v)))),
     fieldNum('Высота, мм', m.h, (v) => patch((t) => (t.h = Math.max(200, Math.min(p.ceiling, v))))),
     fieldNum('Глубина, мм', m.depth, (v) => patch((t) => (t.depth = Math.max(150, v)))),
     h(
@@ -380,118 +363,214 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
       btn('✕ Удалить', () => deleteSelected()),
     ),
   );
-
-  root.append(h('h4', {}, `Секции (${m.cells.length})`));
-  m.cells.forEach((cell, idx) => {
-    const box = h('div', { class: 'facade-row' + (ui.cell === idx ? ' sel' : '') });
-    box.addEventListener('click', () => {
-      ui.cell = idx;
-      renderAll();
-    });
-    const open = cell.facade === null;
-    box.append(
+  if (z.start > 0 || z.end > 0) {
+    root.append(
       h(
-        'span',
-        { class: 'row-label' },
-        `Секция ${idx + 1} · ${open ? 'открытая' : FACADE_LABEL[cell.facade as FacadeKind]}${
-          open ? `, полок: ${shelfCount(m, p, cell)}` : ''
-        }`,
-      ),
-      fieldNum('ширина', cell.w, (v) => setCellWidth(m.id, idx, v)),
-      fieldSelect(
-        'фасад',
-        cell.facade ?? 'none',
-        [
-          ['none', 'нет'],
-          ...(Object.keys(FACADE_LABEL) as FacadeKind[]).map(
-            (k): [string, string] => [k, FACADE_LABEL[k]],
-          ),
-        ],
-        (v) => setCell(idx, (c) => (c.facade = v === 'none' ? null : (v as FacadeKind))),
+        'div',
+        { class: 'hint' },
+        `Углы стены заняты: ${z.start} слева, ${z.end} справа (глубина смежного ряда).`,
       ),
     );
-    if (cell.facade === 'door') {
+  }
+
+  root.append(h('h4', {}, `Нарезка · отсеков: ${countLeaves(m.root)}`));
+  const path = ui.path;
+  const leaf = path ? findLeafBox(p, m, path) : null;
+  if (!leaf) {
+    root.append(h('div', { class: 'hint' }, 'Кликните отсек на чертеже, чтобы нарезать его.'));
+    return;
+  }
+
+  const setPath = (np: Path | null) => {
+    select({ kind: 'module', id: m.id }, np);
+    renderAll();
+  };
+  const box = h('div', { class: 'facade-row sel' });
+  box.append(h('span', { class: 'row-label' }, `Отсек ${path!.join('·') || '—'} · ${Math.round(leaf.w)}×${Math.round(leaf.h)} мм`));
+
+  const face = leaf.leaf.face;
+  const patchFace = (next: LeafFace) => setFace(m.id, path!, next);
+
+  box.append(
+    fieldSelect(
+      'отсек',
+      face.kind,
+      (Object.keys(FACE_LABEL) as LeafFace['kind'][]).map(
+        (k): [string, string] => [k, FACE_LABEL[k]],
+      ),
+      (v) => {
+        const kind = v as LeafFace['kind'];
+        if (kind === face.kind) return;
+        patchFace(
+          kind === 'open'
+            ? { kind: 'open', shelves: 2, shelfPitch: null }
+            : kind === 'door'
+              ? { kind: 'door', hinge: 'left', fill: 'дуб лён' }
+              : kind === 'drawers'
+                ? { kind: 'drawers', drawers: 3, fill: 'дуб лён' }
+                : { kind: 'panel', fill: 'дуб лён' },
+        );
+        renderAll();
+      },
+    ),
+  );
+  if (face.kind === 'open') {
+    const f = face as LeafOpen;
+    if (f.shelfPitch) {
       box.append(
-        fieldSelect(
-          'петля',
-          cell.hinge,
-          [
-            ['left', 'Лев.'],
-            ['right', 'Прав.'],
-          ],
-          (v) => setCell(idx, (c) => (c.hinge = v as 'left' | 'right')),
+        fieldNumOpt(
+          'шаг полки',
+          f.shelfPitch ?? null,
+          '',
+          (v) => {
+            patchFace({ kind: 'open', shelves: f.shelves, shelfPitch: v && v > 0 ? v : null });
+            renderAll();
+          },
+          { class: 'tiny' },
         ),
       );
-    }
-    if (cell.facade === 'drawer') {
+    } else {
       box.append(
         fieldNum(
-          'ящиков',
-          cell.drawers,
-          (v) => setCell(idx, (c) => (c.drawers = Math.max(1, Math.min(12, Math.round(v))))),
-          { step: '1', min: 1, max: 12 },
+          'полок',
+          f.shelves,
+          (v) => {
+            patchFace({ kind: 'open', shelves: Math.max(0, Math.min(20, Math.round(v))), shelfPitch: null });
+            renderAll();
+          },
+          { step: '1', min: 0, max: 20 },
+        ),
+        fieldNumOpt(
+          'шаг полки',
+          null,
+          'мм',
+          (v) => {
+            patchFace({ kind: 'open', shelves: f.shelves, shelfPitch: v && v > 0 ? v : null });
+            renderAll();
+          },
+          { class: 'tiny' },
         ),
       );
     }
-    if (cell.facade === null) {
-      if (cell.shelfPitch) {
-        box.append(
-          fieldNumOpt(
-            'полка, мм',
-            cell.shelfPitch,
-            '—',
-            (v) => setCell(idx, (c) => (c.shelfPitch = v && v > 0 ? v : null)),
-            { class: 'tiny' },
-          ),
-        );
-      } else {
-        box.append(
-          fieldNum(
-            'полок',
-            shelfCount(m, p, cell),
-            (v) =>
-              setCell(idx, (c) => {
-                c.shelves = Math.max(0, Math.min(20, Math.round(v)));
-                c.shelfPitch = null;
-              }),
-            { step: '1', min: 0, max: 20 },
-          ),
-        );
-        box.append(
-          fieldNumOpt(
-            'полка, мм',
-            null,
-            'по высоте',
-            (v) => setCell(idx, (c) => (c.shelfPitch = v && v > 0 ? v : null)),
-            { class: 'tiny' },
-          ),
-        );
-      }
-    }
+  }
+  if (face.kind === 'door') {
+    box.append(
+      fieldSelect(
+        'петля',
+        face.hinge,
+        [
+          ['left', 'Лев.'],
+          ['right', 'Прав.'],
+        ],
+        (v) => {
+          patchFace({ ...face, hinge: v as 'left' | 'right' });
+          renderAll();
+        },
+      ),
+      fieldSelect(
+        'цвет',
+        face.fill ?? '',
+        [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
+        (v) => {
+          patchFace({ ...face, fill: v || undefined });
+          renderAll();
+        },
+      ),
+      fieldSelect(
+        'стекло',
+        face.glass ? '1' : '0',
+        [
+          ['0', 'нет'],
+          ['1', 'да'],
+        ],
+        (v) => {
+          patchFace({ ...face, glass: v === '1' || undefined });
+          renderAll();
+        },
+      ),
+    );
+  }
+  if (face.kind === 'drawers') {
+    const f = face as LeafDrawers;
+    box.append(
+      fieldNum(
+        'ящиков',
+        f.drawers,
+        (v) => {
+          patchFace({ kind: 'drawers', drawers: Math.max(1, Math.min(12, Math.round(v))), fill: f.fill });
+          renderAll();
+        },
+        { step: '1', min: 1, max: 12 },
+      ),
+      fieldSelect(
+        'цвет',
+        f.fill ?? '',
+        [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
+        (v) => {
+          patchFace({ ...f, fill: v || undefined });
+          renderAll();
+        },
+      ),
+    );
+  }
+  if (face.kind === 'panel') {
     box.append(
       fieldSelect(
         'цвет',
-        cell.fill ?? '',
+        face.fill ?? '',
         [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
-        (v) => setCell(idx, (c) => (c.fill = v || undefined)),
+        (v) => {
+          patchFace({ ...face, fill: v || undefined });
+          renderAll();
+        },
       ),
-      btn('⇄', () => splitCell(m.id, idx), 'Разделить пополам'),
-      btn('✕', () => removeCell(m.id, idx), 'Удалить секцию (ширина соседу)'),
     );
-    root.append(box);
-  });
+  }
+  root.append(box);
+
   root.append(
     h(
       'div',
       { class: 'row' },
-      btn('+ секция', () => addCell(m.id), 'Добавить, разделив самую широкую'),
-      h(
-        'span',
-        { class: cellsSum(m) === m.w ? 'hint' : 'issue error' },
-        `Σ ${cellsSum(m)} / ${m.w} мм`,
-      ),
+      btn('⊢ ⟂ Разделить', () => splitLeaf(m.id, path!, 'v'), 'Вертикальная перегородка пополам'),
+      btn('⊤ Разделить', () => splitLeaf(m.id, path!, 'h'), 'Горизонтальная перегородка пополам'),
+      btn('✕ Убрать отсек', () => removeLeaf(m.id, path!), 'Слиться с соседом'),
     ),
   );
+  if (path && path.length > 0) {
+    root.append(
+      fieldNum(
+        'перегородка, мм',
+        parentT(m, path),
+        (v) => setDividerT(m.id, path, v),
+        { step: '2', min: 0, max: 60 },
+      ),
+    );
+    if (path.length > 1) {
+      root.append(
+        h(
+          'div',
+          { class: 'row' },
+          btn('↑ наверх', () => setPath(path.slice(0, -1))),
+        ),
+      );
+    }
+  }
+}
+
+function findLeafBox(p: Project, m: WardModule, path: Path) {
+  return layoutModule(p, m).leaves.find(
+    (lb) => lb.path.length === path.length && lb.path.every((v, i) => v === path[i]),
+  );
+}
+
+function parentT(m: WardModule, path: Path): number {
+  let cur: BoxNode = m.root;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (cur.type !== 'split') return 18;
+    cur = cur.children[path[i]].node;
+  }
+  return cur.type === 'split' ? cur.t : 18;
 }
 
 // ------------------------------------------------------------------ status
@@ -518,24 +597,18 @@ export function renderStatus(root: HTMLElement): void {
       h(
         'span',
         { class: 'ok' },
-        '✓ замечаний нет · клик по секции — выбрать, жёлтые ручки — ширины секций, двойной клик по секции — фасад вкл/выкл',
+        '✓ замечаний нет · клик по отсеку — выбрать · жёлтые грифы — перегородки · двойной клик по отсеку — ниша/дверца',
       ),
     );
     return;
   }
   const counts = { error: 0, warn: 0 };
   for (const i of issues) counts[i.level]++;
-  root.append(
-    h('span', { class: 'counts' }, `⚠ ошибок: ${counts.error}, предупреждений: ${counts.warn}`),
-  );
+  root.append(h('span', { class: 'counts' }, `⚠ ошибок: ${counts.error}, предупреждений: ${counts.warn}`));
   for (const i of issues) {
     const id = i.refs[0];
     const kind = refToSelection(id);
-    const span = h(
-      'span',
-      { class: `issue ${i.level}` },
-      `${i.level === 'error' ? '⛔' : '⚠'} ${i.message}`,
-    );
+    const span = h('span', { class: `issue ${i.level}` }, `${i.level === 'error' ? '⛔' : '⚠'} ${i.message}`);
     if (kind) {
       span.classList.add('clickable');
       span.addEventListener('click', () => {

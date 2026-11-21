@@ -3,27 +3,28 @@ import { facadeView, ui, select, renderAll } from '../state.ts';
 import {
   WALLS,
   CARCASS_T,
-  cornerStart,
+  cornerZones,
   findModule,
-  layoutCells,
+  layoutModule,
   modulesOn,
-  shelfYs,
+  shelfYsIn,
   totalElevationWidth,
   wallAtX,
   wallStart,
 } from '../geometry.ts';
-import { FACADE_FILLS, KIND_LABEL, WALL_LABEL } from '../defaults.ts';
+import { FACADE_FILLS, WALL_LABEL } from '../defaults.ts';
 import { validate } from '../validate.ts';
 import {
-  dragCellBoundary,
+  dragDivider,
   insertModuleAtPointer,
   moveModule,
   moveSocket,
   moveTv,
   resizeModule,
-  toggleCellFacade,
+  toggleFace,
 } from '../edit.ts';
-import type { Cell, Project, WardModule, WallId } from '../types.ts';
+import type { DividerBox, LeafBox } from '../geometry.ts';
+import type { Path, Project, WardModule, WallId } from '../types.ts';
 
 const COL = {
   plate: '#151922',
@@ -45,37 +46,40 @@ const COL = {
 
 const DEFAULT_FILL: Record<string, string> = {
   door: '#c9a877',
-  drawer: '#c9a877',
-  glass: '#9fc3d8',
+  drawers: '#c9a877',
   panel: '#c2c6cc',
+  open: '#241c15',
 };
 
-function fillOf(cell: Cell): string {
-  if (cell.fill) return FACADE_FILLS[cell.fill] ?? cell.fill;
-  return DEFAULT_FILL[cell.facade ?? 'panel'] ?? '#999';
+function fillOf(fill: string | undefined, kind: string): string {
+  if (fill) return FACADE_FILLS[fill] ?? fill;
+  return DEFAULT_FILL[kind] ?? '#999';
 }
 
-// ------------------------------------------------- данные ↔ экранные координаты
-// Данные: `from` вдоль стены; для боковых стен — от угла с центральной.
-// Левая стена на фасаде зеркалится: угол — у правого края её плиты.
+// ------------------------------------------------- данные ↔ экран
 
 function isMirror(wall: WallId): boolean {
   return wall === 'left';
 }
 
-/** Точка данных (мм от начала стены) → x на фасаде. */
 function elevOf(p: Project, wall: WallId, x0: number, dataX: number): number {
   return isMirror(wall) ? x0 + p.walls[wall].length - dataX : x0 + dataX;
 }
 
-/** X с фасада → точка данных (мм от начала стены). */
 function dataOf(p: Project, wall: WallId, x0: number, elevX: number): number {
   return isMirror(wall) ? x0 + p.walls[wall].length - elevX : elevX - x0;
 }
 
-/** Знак для приращений: на левой стене движение мыши вправо — это «уменьшение from». */
 function dataSign(wall: WallId): number {
   return isMirror(wall) ? -1 : 1;
+}
+
+function pathStr(path: Path): string {
+  return path.join('.');
+}
+
+export function pathParse(s: string): Path {
+  return s === '' ? [] : s.split('.').map(Number);
 }
 
 // ---------------------------------------------------------------- rendering
@@ -128,7 +132,6 @@ export function renderFacade(): void {
       `<text x="${x0}" y="${-110}" font-size="60" fill="${active ? COL.accent : COL.dim}">${WALL_LABEL[w]} — ${len} мм</text>`,
       `<line x1="${x0}" y1="${fy(0)}" x2="${x0 + len}" y2="${fy(0)}" stroke="${COL.floor}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`,
     );
-    // риски: отсчёт от начала стены (у боковых — от угла)
     for (let t = 500; t < len; t += 500) {
       const xT = elevOf(p, w, x0, t);
       parts.push(
@@ -139,33 +142,37 @@ export function renderFacade(): void {
           `<text x="${xT}" y="${fy(0) + 75}" font-size="46" fill="${COL.tick}" text-anchor="middle">${t}</text>`,
         );
     }
-    // угловая зона боковой стены (глубина центрального ряда)
-    if (w !== 'center') {
-      const cs = cornerStart(p, w);
-      if (cs > 0) {
-        const rx = isMirror(w) ? x0 + len - cs : x0;
-        const clipId = `corner-clip-${w}`;
-        let hatch = '';
-        for (let q = -C; q < cs + 40; q += 150) {
-          hatch += `<line x1="${rx + q}" y1="${-70}" x2="${rx + q + C + 140}" y2="${C + 60}" stroke="${COL.corner}" stroke-width="14" opacity="0.28" vector-effect="non-scaling-stroke"/>`;
-        }
-        parts.push(
-          `<clipPath id="${clipId}"><rect x="${rx}" y="-70" width="${cs}" height="${C + 130}"/></clipPath>`,
-          `<g clip-path="url(#${clipId})">${hatch}</g>`,
-          `<line x1="${rx + (isMirror(w) ? cs : 0)}" y1="${-70}" x2="${rx + (isMirror(w) ? cs : 0)}" y2="${fy(0)}" stroke="${COL.corner}" stroke-width="2" stroke-dasharray="30 24" vector-effect="non-scaling-stroke"/>`,
-          `<text x="${rx + 14}" y="${-24}" font-size="42" fill="${COL.dim}">угол ${cs}</text>`,
-        );
+    // угловые зоны: начало и конец стены, зеркалится только левая
+    const z = cornerZones(p, w);
+    const hatch = (dataFrom: number, dataTo: number, label: string) => {
+      if (dataTo - dataFrom < 10) return;
+      const a = Math.min(dataFrom, dataTo);
+      const wd = Math.abs(dataTo - dataFrom);
+      const rx = isMirror(w) ? x0 + len - (a + wd) : x0 + a;
+      const clipId = `cz-${w}-${dataFrom}`;
+      let lines = '';
+      for (let q = -C; q < wd + 40; q += 150) {
+        lines += `<line x1="${rx + q}" y1="${-70}" x2="${rx + q + C + 140}" y2="${C + 60}" stroke="${COL.corner}" stroke-width="14" opacity="0.28" vector-effect="non-scaling-stroke"/>`;
       }
-    }
+      parts.push(
+        `<clipPath id="${clipId}"><rect x="${rx}" y="-70" width="${wd}" height="${C + 130}"/></clipPath>`,
+        `<g clip-path="url(#${clipId})">${lines}</g>`,
+      );
+      const edgeX = isMirror(w) ? rx + wd : rx;
+      parts.push(
+        `<line x1="${edgeX}" y1="${-70}" x2="${edgeX}" y2="${fy(0)}" stroke="${COL.corner}" stroke-width="2" stroke-dasharray="30 24" vector-effect="non-scaling-stroke"/>`,
+        `<text x="${rx + 14}" y="${-24}" font-size="42" fill="${COL.dim}">${label}</text>`,
+      );
+    };
+    if (z.start > 0) hatch(0, z.start, `угол ${z.start}`);
+    if (z.end > 0) hatch(len - z.end, len, `угол ${z.end}`);
   }
 
   for (const w of WALLS) {
     const x0 = starts[w];
     for (const m of modulesOn(p, w)) {
       const isSel = sel?.kind === 'module' && sel.id === m.id;
-      parts.push(
-        renderModule(p, m, w, x0, fy, errorIds.has(m.id), isSel, isSel ? ui.cell : null),
-      );
+      parts.push(renderModule(p, m, w, x0, fy, errorIds.has(m.id), isSel));
     }
   }
 
@@ -201,7 +208,6 @@ export function renderFacade(): void {
     );
   }
 
-  // хендлы: синие — края модуля, жёлтые — границы секций
   if (sel?.kind === 'module') {
     const m = findModule(p, sel.id);
     if (m) {
@@ -221,20 +227,6 @@ export function renderFacade(): void {
           `</g>`,
         );
       }
-      if (m.cells.length > 1) {
-        const layout = layoutCells(p, m);
-        for (let i = 0; i < layout.length - 1; i++) {
-          const hx = elevOf(p, m.wall, x0, layout[i].x + layout[i].w);
-          parts.push(
-            `<g data-hit="cell-edge" data-id="${m.id}" data-idx="${i}" style="cursor:col-resize">`,
-            `<rect x="${hx - 16}" y="${fy(m.h)}" width="32" height="${m.h - p.base}" fill="${COL.cell}" opacity="0.22"/>`,
-            `<rect x="${hx - 20}" y="${fy(m.h) + (m.h - p.base - hh) / 2}" width="40" height="${hh}" rx="12" fill="${COL.cell}"/>`,
-            `<line x1="${hx - 5}" y1="${fy(m.h) + (m.h - p.base) / 2 - 18}" x2="${hx - 5}" y2="${fy(m.h) + (m.h - p.base) / 2 + 18}" stroke="#3a2c00" stroke-width="3.5"/>`,
-            `<line x1="${hx + 5}" y1="${fy(m.h) + (m.h - p.base) / 2 - 18}" x2="${hx + 5}" y2="${fy(m.h) + (m.h - p.base) / 2 + 18}" stroke="#3a2c00" stroke-width="3.5"/>`,
-            `</g>`,
-          );
-        }
-      }
       parts.push(
         `<text x="${elevOf(p, m.wall, x0, m.from + m.w / 2)}" y="${fy(0) + 170}" font-size="58" fill="${COL.accent}" text-anchor="middle">${m.w} × ${m.h} × ${m.depth}</text>`,
       );
@@ -246,6 +238,17 @@ export function renderFacade(): void {
   applyViewBox();
 }
 
+// --------------------------------------------------------------- модуль
+
+interface RenderCtx {
+  p: Project;
+  wall: WallId;
+  x0: number;
+  fy: (y: number) => number;
+  span: (d1: number, w: number) => number; // левый x фасада для данных [d1, d1+w]
+  ex: (d: number) => number; // точка данных → x
+}
+
 function renderModule(
   p: Project,
   m: WardModule,
@@ -254,90 +257,27 @@ function renderModule(
   fy: (y: number) => number,
   hasError: boolean,
   isSel: boolean,
-  selCell: number | null,
 ): string {
   const mirror = isMirror(wall);
   const len = p.walls[wall].length;
-  // точка данных → x фасада (с зеркалом левой стены)
-  const ex = (dataX: number) => (mirror ? x0 + len - dataX : x0 + dataX);
-  // левый край прямоугольника, покрывающего данные [d1, d1+w]
+  const ex = (d: number) => (mirror ? x0 + len - d : x0 + d);
   const span = (d1: number, w: number) => (mirror ? ex(d1 + w) : ex(d1));
+  const ctx: RenderCtx = { p, wall, x0, fy, span, ex };
 
   const X = span(m.from, m.w);
   const Y = fy(m.h);
-  const bodyH = m.h - p.base;
   const T = CARCASS_T;
   const out: string[] = [];
   out.push(
     `<g data-hit="mod" data-id="${m.id}" data-wall="${wall}" style="cursor:grab">`,
-    `<title>${KIND_LABEL[m.kind]} · ${m.w}×${m.h}×${m.depth} мм</title>`,
+    `<title>Контейнер · ${m.w}×${m.h}×${m.depth} мм</title>`,
     `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="${COL.carcass}"/>`,
-    `<rect x="${X + T / 2}" y="${Y + T / 2}" width="${Math.max(0, m.w - T)}" height="${Math.max(0, bodyH - T / 2)}" fill="${COL.interior}"/>`,
+    `<rect x="${X + T / 2}" y="${Y + T / 2}" width="${Math.max(0, m.w - T)}" height="${Math.max(0, m.h - T)}" fill="${COL.interior}"/>`,
   );
 
-  const layout = layoutCells(p, m);
-  for (const cl of layout) {
-    const cx = span(cl.x, cl.w);
-    const open = cl.cell.facade === null;
-    out.push(`<g data-hit="cell" data-id="${m.id}" data-idx="${cl.index}" style="cursor:pointer">`);
-    out.push(
-      `<title>Секция ${cl.index + 1}: ${cl.cell.facade ?? 'открытая'}, ${Math.round(cl.cell.w)} мм</title>`,
-    );
-    if (open) {
-      for (const y of shelfYs(m, p, cl.cell)) {
-        out.push(
-          `<rect x="${cx + T / 2}" y="${fy(y) - 8}" width="${Math.max(0, cl.w - T)}" height="16" fill="${COL.shelf}" stroke="#00000044" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
-        );
-      }
-    } else {
-      const f = fillOf(cl.cell);
-      const kind = cl.cell.facade as string;
-      out.push(
-        `<rect x="${cx}" y="${Y}" width="${cl.w}" height="${bodyH}" fill="${f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
-      );
-      if (kind === 'door') {
-        const hingeLeft = cl.cell.hinge !== 'right';
-        // петли и ручка считаем в данных, зеркалит ex()
-        const hx = ex(cl.x + (hingeLeft ? 8 : cl.w - 8));
-        const gx = ex(cl.x + (hingeLeft ? cl.w - 42 : 42));
-        out.push(
-          `<line x1="${hx}" y1="${Y + 12}" x2="${hx}" y2="${Y + bodyH - 12}" stroke="#00000044" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
-          `<rect x="${gx - 6}" y="${Y + bodyH / 2 - 110}" width="12" height="220" rx="6" fill="#2f2620"/>`,
-        );
-      } else if (kind === 'drawer') {
-        const n = Math.max(1, Math.round(cl.cell.drawers));
-        const dh = bodyH / n;
-        for (let d = 1; d < n; d++) {
-          out.push(
-            `<line x1="${cx + 6}" y1="${Y + dh * d}" x2="${cx + cl.w - 6}" y2="${Y + dh * d}" stroke="#00000066" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`,
-          );
-        }
-        for (let d = 0; d < n; d++) {
-          out.push(
-            `<line x1="${cx + cl.w * 0.3}" y1="${Y + dh * (d + 0.5)}" x2="${cx + cl.w * 0.7}" y2="${Y + dh * (d + 0.5)}" stroke="#2f2620" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`,
-          );
-        }
-      } else if (kind === 'glass') {
-        out.push(
-          `<line x1="${cx + cl.w * 0.15}" y1="${Y + bodyH * 0.85}" x2="${cx + cl.w * 0.6}" y2="${Y + bodyH * 0.15}" stroke="#ffffff55" stroke-width="3" vector-effect="non-scaling-stroke"/>`,
-        );
-      }
-    }
-    if (isSel && selCell === cl.index) {
-      out.push(
-        `<rect x="${cx + 2}" y="${Y + 2}" width="${Math.max(0, cl.w - 4)}" height="${bodyH - 4}" fill="none" stroke="${COL.cell}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`,
-      );
-    }
-    out.push(`</g>`);
-  }
-
-  // перегородки между секциями
-  for (let i = 1; i < layout.length; i++) {
-    const bx = ex(layout[i].x);
-    out.push(
-      `<rect x="${bx - T / 2}" y="${Y + T / 2}" width="${T}" height="${bodyH - T / 2}" fill="${COL.partition}"/>`,
-    );
-  }
+  const { leaves, dividers } = layoutModule(p, m);
+  for (const lb of leaves) out.push(renderLeaf(ctx, m, lb, isSel));
+  for (const d of dividers) out.push(renderDividerStructure(ctx, d));
 
   if (p.base > 0)
     out.push(
@@ -348,16 +288,129 @@ function renderModule(
     `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="none" stroke="${hasError ? COL.danger : isSel ? COL.accent : '#00000088'}" stroke-width="${hasError || isSel ? 2.5 : 1.5}" vector-effect="non-scaling-stroke"/>`,
     `</g>`,
   );
+
+  // грифы разделителей — поверх, при выбранном модуле
+  if (isSel) {
+    for (const d of dividers) {
+      const label = pathStr(d.path);
+      if (d.dir === 'v') {
+        const cx = span(d.x + d.w / 2, 0);
+        out.push(
+          `<g data-hit="divider" data-id="${m.id}" data-path="${label}" data-after="${d.after}" data-dir="v" style="cursor:col-resize">`,
+          `<rect x="${cx - 15}" y="${Y}" width="30" height="${m.h}" fill="${COL.cell}" opacity="0.18"/>`,
+          `<rect x="${cx - 18}" y="${Y + (m.h - 140) / 2}" width="36" height="140" rx="11" fill="${COL.cell}"/>`,
+          `<line x1="${cx - 4}" y1="${Y + m.h / 2 - 16}" x2="${cx - 4}" y2="${Y + m.h / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<line x1="${cx + 4}" y1="${Y + m.h / 2 - 16}" x2="${cx + 4}" y2="${Y + m.h / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
+          `</g>`,
+        );
+      } else {
+        const cy = fy(d.y + d.h / 2);
+        out.push(
+          `<g data-hit="divider" data-id="${m.id}" data-path="${label}" data-after="${d.after}" data-dir="h" style="cursor:row-resize">`,
+          `<rect x="${X}" y="${cy - 15}" width="${m.w}" height="30" fill="${COL.cell}" opacity="0.18"/>`,
+          `<rect x="${X + (m.w - 140) / 2}" y="${cy - 18}" width="140" height="36" rx="11" fill="${COL.cell}"/>`,
+          `<line x1="${X + m.w / 2 - 16}" y1="${cy - 4}" x2="${X + m.w / 2 + 16}" y2="${cy - 4}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<line x1="${X + m.w / 2 - 16}" y1="${cy + 4}" x2="${X + m.w / 2 + 16}" y2="${cy + 4}" stroke="#3a2c00" stroke-width="3"/>`,
+          `</g>`,
+        );
+      }
+    }
+  }
+
+  return out.join('');
+}
+
+function renderDividerStructure(ctx: RenderCtx, d: DividerBox): string {
+  const x = ctx.span(d.x, d.w);
+  const y = ctx.fy(d.y + d.h);
+  return `<rect x="${x}" y="${y}" width="${d.w}" height="${d.h}" fill="${COL.partition}"/>`;
+}
+
+function renderLeaf(ctx: RenderCtx, m: WardModule, lb: LeafBox, moduleSelected: boolean): string {
+  const { fy, span, ex } = ctx;
+  const x = span(lb.x, lb.w);
+  const y = fy(lb.y + lb.h);
+  const face = lb.leaf.face;
+  const selected =
+    moduleSelected &&
+    ui.path &&
+    ui.path.length === lb.path.length &&
+    ui.path.every((v, i) => v === lb.path[i]);
+  const out: string[] = [];
+  const faceTitle =
+    face.kind === 'open'
+      ? 'ниша'
+      : face.kind === 'door'
+        ? face.glass
+          ? 'стекло'
+          : 'дверца'
+        : face.kind === 'drawers'
+          ? `ящики ×${face.drawers}`
+          : 'панель';
+  out.push(
+    `<g data-hit="leaf" data-id="${m.id}" data-path="${pathStr(lb.path)}" style="cursor:pointer">`,
+    `<title>Отсек ${pathStr(lb.path) || '—'}: ${faceTitle} · ${Math.round(lb.w)}×${Math.round(lb.h)}</title>`,
+  );
+  if (face.kind === 'open') {
+    for (const sy of shelfYsIn(lb.y, lb.h, face.shelves, face.shelfPitch)) {
+      out.push(
+        `<rect x="${x + 6}" y="${fy(sy) - 8}" width="${Math.max(0, lb.w - 12)}" height="16" fill="${COL.shelf}" stroke="#00000044" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+      );
+    }
+  } else {
+    const f = fillOf(face.fill, face.kind);
+    if (face.kind === 'drawers') {
+      const n = Math.max(1, Math.round(face.drawers));
+      const dh = lb.h / n;
+      for (let d = 0; d < n; d++) {
+        out.push(
+          `<rect x="${x}" y="${fy(lb.y + dh * (d + 1))}" width="${lb.w}" height="${dh}" fill="${f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+          `<line x1="${x + lb.w * 0.3}" y1="${fy(lb.y + dh * (d + 0.5))}" x2="${x + lb.w * 0.7}" y2="${fy(lb.y + dh * (d + 0.5))}" stroke="#2f2620" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`,
+        );
+      }
+    } else {
+      out.push(
+        `<rect x="${x}" y="${y}" width="${lb.w}" height="${lb.h}" fill="${face.kind === 'door' && face.glass ? '#9fc3d888' : f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+      );
+      if (face.kind === 'door') {
+        // зеркалит ex(): данные считаем в local-координатах стены
+        void ex;
+        const mirror = isMirror(ctx.wall);
+        const hingeAtDataLeft = face.hinge !== 'right';
+        const dataHingeEdge = hingeAtDataLeft ? lb.x : lb.x + lb.w;
+        const dataGrip = hingeAtDataLeft ? lb.x + lb.w : lb.x;
+        const hx = span(dataHingeEdge, 0) + (hingeAtDataLeft ? (mirror ? -8 : 8) : mirror ? 8 : -8);
+        const gx = span(dataGrip, 0) + (mirror ? (hingeAtDataLeft ? 42 : -42) : hingeAtDataLeft ? -42 : 42);
+        out.push(
+          `<line x1="${hx}" y1="${y + 12}" x2="${hx}" y2="${y + lb.h - 12}" stroke="#00000044" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
+          `<rect x="${gx - 6}" y="${y + lb.h / 2 - Math.min(110, lb.h * 0.18)}" width="12" height="${Math.min(220, lb.h * 0.36)}" rx="6" fill="#2f2620"/>`,
+        );
+        if (face.glass) {
+          out.push(
+            `<line x1="${x + lb.w * 0.15}" y1="${y + lb.h * 0.85}" x2="${x + lb.w * 0.6}" y2="${y + lb.h * 0.15}" stroke="#ffffff55" stroke-width="3" vector-effect="non-scaling-stroke"/>`,
+          );
+        }
+      }
+    }
+  }
+  if (selected) {
+    out.push(
+      `<rect x="${x + 2}" y="${y + 2}" width="${Math.max(0, lb.w - 4)}" height="${Math.max(0, lb.h - 4)}" fill="none" stroke="${COL.cell}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`,
+    );
+  }
+  out.push(`</g>`);
   return out.join('');
 }
 
 // ---------------------------------------------------------------- interaction
 
 interface DragState {
-  mode: 'move' | 'edge' | 'cell-edge' | 'tv' | 'socket' | 'pan';
+  mode: 'move' | 'edge' | 'divider' | 'tv' | 'socket' | 'pan';
   id?: string;
   dir?: 'l' | 'r';
-  idx?: number;
+  path?: Path;
+  after?: number;
+  axis?: 'v' | 'h';
   wall?: WallId;
   sign: number;
   startMmX: number;
@@ -411,90 +464,76 @@ export function attachFacade(el: SVGSVGElement): void {
       moved: false,
       needCp: false,
     };
-    if (hit === 'edge' && target) {
-      const id = target.getAttribute('data-id') ?? '';
-      const m = findModule(store.project, id);
-      if (m) {
-        select({ kind: 'module', id });
-        ui.wall = m.wall;
-        drag = {
-          ...base,
-          mode: 'edge',
-          id,
-          dir: (target.getAttribute('data-dir') as 'l' | 'r') ?? 'r',
-          wall: m.wall,
-          sign: dataSign(m.wall),
-          origFrom: m.from,
-          origW: m.w,
-          needCp: true,
-        };
-      }
-    } else if (hit === 'cell-edge' && target) {
-      const id = target.getAttribute('data-id') ?? '';
-      const idx = Number(target.getAttribute('data-idx'));
-      const m = findModule(store.project, id);
-      if (m && Number.isFinite(idx)) {
-        drag = {
-          ...base,
-          mode: 'cell-edge',
-          id,
-          idx,
-          wall: m.wall,
-          sign: dataSign(m.wall),
-          needCp: true,
-        };
-      }
-    } else if (hit === 'cell' && target) {
-      const id = target.getAttribute('data-id') ?? '';
-      const idx = Number(target.getAttribute('data-idx'));
-      const m = findModule(store.project, id);
-      if (m) {
-        select({ kind: 'module', id }, Number.isFinite(idx) ? idx : null);
-        ui.wall = m.wall;
-        drag = {
-          ...base,
-          mode: 'move',
-          id,
-          wall: m.wall,
-          sign: dataSign(m.wall),
-          origFrom: m.from,
-          origW: m.w,
-          needCp: true,
-        };
-      }
-    } else if (hit === 'mod' && target) {
-      const id = target.getAttribute('data-id') ?? '';
-      const m = findModule(store.project, id);
-      if (m) {
-        select({ kind: 'module', id });
-        ui.wall = m.wall;
-        drag = {
-          ...base,
-          mode: 'move',
-          id,
-          wall: m.wall,
-          sign: dataSign(m.wall),
-          origFrom: m.from,
-          origW: m.w,
-          needCp: true,
-        };
-      }
-    } else if (hit === 'tv' && store.project.tv) {
+    const p = store.project;
+    const id = target?.getAttribute('data-id') ?? '';
+    const m = id ? findModule(p, id) : undefined;
+
+    if (hit === 'edge' && m) {
+      select({ kind: 'module', id: m.id });
+      ui.wall = m.wall;
+      drag = {
+        ...base,
+        mode: 'edge',
+        id: m.id,
+        dir: (target?.getAttribute('data-dir') as 'l' | 'r') ?? 'r',
+        wall: m.wall,
+        sign: dataSign(m.wall),
+        origFrom: m.from,
+        origW: m.w,
+        needCp: true,
+      };
+    } else if (hit === 'divider' && m && target) {
+      drag = {
+        ...base,
+        mode: 'divider',
+        id: m.id,
+        path: pathParse(target.getAttribute('data-path') ?? ''),
+        after: Number(target.getAttribute('data-after')),
+        axis: (target.getAttribute('data-dir') as 'v' | 'h') ?? 'v',
+        wall: m.wall,
+        sign: dataSign(m.wall),
+        needCp: true,
+      };
+    } else if (hit === 'leaf' && m && target) {
+      select({ kind: 'module', id: m.id }, pathParse(target.getAttribute('data-path') ?? ''));
+      ui.wall = m.wall;
+      drag = {
+        ...base,
+        mode: 'move',
+        id: m.id,
+        wall: m.wall,
+        sign: dataSign(m.wall),
+        origFrom: m.from,
+        origW: m.w,
+        needCp: true,
+      };
+    } else if (hit === 'mod' && m) {
+      select({ kind: 'module', id: m.id });
+      ui.wall = m.wall;
+      drag = {
+        ...base,
+        mode: 'move',
+        id: m.id,
+        wall: m.wall,
+        sign: dataSign(m.wall),
+        origFrom: m.from,
+        origW: m.w,
+        needCp: true,
+      };
+    } else if (hit === 'tv' && p.tv) {
       select({ kind: 'tv', id: 'tv' });
-      const t = store.project.tv;
-      ui.wall = t.wall;
+      ui.wall = p.tv.wall;
       drag = {
         ...base,
         mode: 'tv',
-        wall: t.wall,
-        sign: dataSign(t.wall),
-        origCx: t.centerX,
-        origCy: t.centerY,
+        wall: p.tv.wall,
+        sign: dataSign(p.tv.wall),
+        origCx: p.tv.centerX,
+        origCy: p.tv.centerY,
         needCp: true,
       };
     } else if (hit === 'socket' && target) {
-      const id = target.getAttribute('data-id') ?? '';
-      const s = store.project.sockets.find((v) => v.id === id);
+      const s = p.sockets.find((v) => v.id === id);
       if (s) {
         select({ kind: 'socket', id });
         ui.wall = s.wall;
@@ -539,8 +578,7 @@ export function attachFacade(el: SVGSVGElement): void {
     }
     const p = store.project;
     const mm = toMm(e);
-    const dxE = mm.x - drag.startMmX; // экранное смещение
-    const dx = drag.sign * dxE; // в данных
+    const dx = drag.sign * (mm.x - drag.startMmX);
     const dy = -(mm.y - drag.startMmY);
     if (drag.mode === 'move' && drag.id) moveModule(drag.id, drag.origFrom + dx);
     else if (drag.mode === 'edge' && drag.id && drag.dir)
@@ -549,9 +587,13 @@ export function attachFacade(el: SVGSVGElement): void {
         drag.dir,
         (drag.dir === 'l' ? drag.origFrom : drag.origFrom + drag.origW) + dx,
       );
-    else if (drag.mode === 'cell-edge' && drag.id && drag.wall && drag.idx !== undefined) {
-      const localData = dataOf(p, drag.wall, wallStart(p)[drag.wall], mm.x);
-      dragCellBoundary(drag.id, drag.idx, localData);
+    else if (drag.mode === 'divider' && drag.id && drag.path && drag.after !== undefined && drag.wall) {
+      if (drag.axis === 'h') {
+        dragDivider(drag.id, drag.path, drag.after, floorY(mm));
+      } else {
+        const localData = dataOf(p, drag.wall, wallStart(p)[drag.wall], mm.x);
+        dragDivider(drag.id, drag.path, drag.after, localData);
+      }
     } else if (drag.mode === 'tv') moveTv(drag.origCx + dx, drag.origCy + dy);
     else if (drag.mode === 'socket' && drag.id) moveSocket(drag.id, drag.origCx + dx, drag.origCy + dy);
   });
@@ -582,17 +624,17 @@ export function attachFacade(el: SVGSVGElement): void {
     const hit = target?.getAttribute('data-hit') ?? null;
     const mm = toMm(e);
     const p = store.project;
-    if (hit === 'cell' && target) {
+    if (hit === 'leaf' && target) {
       const id = target.getAttribute('data-id') ?? '';
-      const m = findModule(p, id);
-      if (!m) return;
-      const localData = dataOf(p, m.wall, wallStart(p)[m.wall], mm.x);
-      toggleCellFacade(id, localData, floorY(mm));
+      const path = pathParse(target.getAttribute('data-path') ?? '');
+      toggleFace(id, path);
     } else if (hit === 'wall') {
       const at = wallAtX(p, mm.x);
       if (!at) return;
       const elevGlobal = wallStart(p)[at.wall] + at.local;
-      insertModuleAtPointer('wardrobe', at.wall, dataOf(p, at.wall, wallStart(p)[at.wall], elevGlobal));
+      insertModuleAtPointer(at.wall, dataOf(p, at.wall, wallStart(p)[at.wall], elevGlobal));
     }
   });
 }
+
+export type { LeafBox, DividerBox };

@@ -1,81 +1,91 @@
 import { store } from './store.ts';
 import { renderAll, select, ui } from './state.ts';
-import { defaultCells, newModule } from './defaults.ts';
+import { leaf, newModule } from './defaults.ts';
 import {
-  cellIndexAt,
+  CARCASS_T,
   clamp,
-  cornerStart,
-  layoutCells,
+  cornerZones,
+  layoutModule,
   modulesOn,
-  rescaleCells,
   resolveAround,
   snap,
   wallEnd,
 } from './geometry.ts';
-import type { Cell, ModuleKind, Project, WallId, WardModule } from './types.ts';
+import type {
+  BoxNode,
+  LeafFace,
+  Path,
+  Project,
+  SplitNode,
+  WallId,
+  WardModule,
+} from './types.ts';
 import { uid } from './types.ts';
 
 export const MIN_W = 200;
-export const MIN_CELL_W = 120;
+export const MIN_LEAF = 80;
 
-const minCell = (p: Project) => Math.max(MIN_CELL_W, p.grid);
+// ------------------------------------------------------------------ модули
 
-/** Первый свободный слот стены шириной w (в обход угловой зоны); -1 если не влезает. */
 function firstFreeFrom(p: Project, wall: WallId, w: number): number {
+  const z = cornerZones(p, wall);
+  const hi = p.walls[wall].length - z.end;
   const ms = modulesOn(p, wall);
-  let cursor = cornerStart(p, wall);
+  let cursor = z.start;
   for (const m of ms) {
     if (m.from - cursor >= w) return cursor;
     cursor = Math.max(cursor, wallEnd(m));
   }
-  return cursor + w <= p.walls[wall].length ? cursor : -1;
+  return cursor + w <= hi ? cursor : -1;
 }
 
-export function addModule(kind: ModuleKind, wall: WallId): void {
+export function addModule(wall: WallId): void {
   const p = store.project;
-  const proto = newModule(kind, wall, 0, p);
-  const usable = p.walls[wall].length - cornerStart(p, wall);
-  if (proto.w > usable) {
-    if (usable < MIN_W) {
-      ui.message =
-        cornerStart(p, wall) > 0
-          ? 'Угол занят глубиной центрального ряда — на боковой стене места не осталось'
-          : 'На стене нет места — удлинитe стену или уберите лишние модули';
-      renderAll();
-      return;
-    }
-    proto.w = usable;
-    rescaleCells(proto, proto.w);
+  const z = cornerZones(p, wall);
+  const usable = p.walls[wall].length - z.start - z.end;
+  const w = Math.min(600, usable);
+  if (w < MIN_W) {
+    ui.message =
+      z.start + z.end > 0
+        ? 'Углы заняты глубиной смежного ряда — на стене не осталось места'
+        : 'На стене нет места — удлинитe стену или уберите лишние модули';
+    renderAll();
+    return;
   }
-  const from = firstFreeFrom(p, wall, proto.w);
+  const from = firstFreeFrom(p, wall, w);
   if (from < 0) {
     ui.message = 'На стене нет места — удлинитe стену или уберите лишние модули';
     renderAll();
     return;
   }
-  proto.from = from;
-  store.update((pp) => pp.modules.push(proto));
-  select({ kind: 'module', id: proto.id });
+  const m = newModule(wall, from, w, p);
+  store.update((pp) => pp.modules.push(m));
+  select({ kind: 'module', id: m.id }, [0]);
 }
 
-/** Двойной клик по пустому месту стены: вставить модуль центром под курсор. */
-export function insertModuleAtPointer(kind: ModuleKind, wall: WallId, xMm: number): void {
+/** Двойной клик по пустому месту стены: контейнер центром под курсором. */
+export function insertModuleAtPointer(wall: WallId, xMm: number): void {
   const p = store.project;
   const draft = structuredClone(p);
-  const proto = newModule(kind, wall, 0, draft);
-  const lo = cornerStart(draft, wall);
-  if (proto.w > draft.walls[wall].length - lo) proto.w = Math.max(MIN_W, draft.walls[wall].length - lo);
-  const from = clamp(snap(draft, xMm - proto.w / 2), lo, draft.walls[wall].length - proto.w);
-  const anchor = { ...proto, from };
-  draft.modules.push(anchor);
-  if (!resolveAround(draft, wall, anchor)) {
-    ui.message = 'Здесь тесно — модуль добавлен в конец стены';
-    addModule(kind, wall);
+  const z = cornerZones(draft, wall);
+  const usable = draft.walls[wall].length - z.start - z.end;
+  if (usable < MIN_W) return;
+  const proto = newModule(wall, 0, Math.min(600, usable), draft);
+  const from = clamp(
+    snap(draft, xMm - proto.w / 2),
+    z.start,
+    draft.walls[wall].length - z.end - proto.w,
+  );
+  proto.from = from;
+  draft.modules.push(proto);
+  if (!resolveAround(draft, wall, proto)) {
+    ui.message = 'Здесь тесно — контейнер добавлен в конец стены';
+    addModule(wall);
     renderAll();
     return;
   }
   store.replace(draft);
-  select({ kind: 'module', id: anchor.id });
+  select({ kind: 'module', id: proto.id }, [0]);
 }
 
 export function moveModule(id: string, newFrom: number): void {
@@ -83,30 +93,32 @@ export function moveModule(id: string, newFrom: number): void {
   const draft = structuredClone(p);
   const m = draft.modules.find((x) => x.id === id);
   if (!m) return;
-  m.from = clamp(snap(draft, newFrom), cornerStart(draft, m.wall), draft.walls[m.wall].length - m.w);
+  const z = cornerZones(draft, m.wall);
+  m.from = clamp(
+    snap(draft, newFrom),
+    z.start,
+    draft.walls[m.wall].length - z.end - m.w,
+  );
   if (!resolveAround(draft, m.wall, m)) return;
   store.update((pp) => {
     pp.modules = draft.modules;
   }, false);
 }
 
-/** Изменить ширину модуля; ширины ячеек пересчитываются пропорционально. */
 export function resizeModule(id: string, edge: 'l' | 'r', pos: number): void {
   const p = store.project;
   const draft = structuredClone(p);
   const m = draft.modules.find((x) => x.id === id);
   if (!m) return;
+  const z = cornerZones(draft, m.wall);
+  const hi = draft.walls[m.wall].length - z.end;
   if (edge === 'l') {
-    const f = clamp(snap(draft, pos), 0, m.from + m.w - MIN_W);
-    const newW = m.w + (m.from - f);
-    rescaleCells(m, newW);
-    m.w = newW;
+    const f = clamp(snap(draft, pos), z.start, m.from + m.w - MIN_W);
+    m.w += m.from - f;
     m.from = f;
   } else {
-    const end = clamp(snap(draft, pos), m.from + MIN_W, draft.walls[m.wall].length);
-    const newW = end - m.from;
-    rescaleCells(m, newW);
-    m.w = newW;
+    const end = clamp(snap(draft, pos), m.from + MIN_W, hi);
+    m.w = end - m.from;
   }
   if (!resolveAround(draft, m.wall, m)) return;
   store.update((pp) => {
@@ -133,7 +145,7 @@ export function duplicateModule(id: string): void {
   const original = draft.modules.find((x) => x.id === id)!;
   const copy = structuredClone(original);
   copy.id = uid('m');
-  copy.from = Math.max(wallEnd(original), cornerStart(draft, copy.wall));
+  copy.from = wallEnd(original);
   draft.modules.push(copy);
   if (!resolveAround(draft, copy.wall, copy)) {
     copy.from = firstFreeFrom(draft, copy.wall, copy.w);
@@ -147,134 +159,162 @@ export function duplicateModule(id: string): void {
   select({ kind: 'module', id: copy.id });
 }
 
-// ------------------------------------------------------------------ ячейки
+// ------------------------------------------------------------------ нарезка
 
-function patchModuleCommit(id: string, fn: (m: WardModule) => void): void {
+function patchModule(id: string, fn: (m: WardModule) => void, commit = true): void {
   store.update((pp) => {
     const t = pp.modules.find((x) => x.id === id);
     if (t) fn(t);
-  });
+  }, commit);
 }
 
-/** Установить ширину ячейки за счёт соседа (инвариант: сумма ширин = ширина модуля). */
-export function setCellWidth(id: string, idx: number, newW: number): void {
-  patchModuleCommit(id, (m) => {
-    const cell = m.cells[idx];
-    if (!cell || m.cells.length === 0) return;
-    if (m.cells.length === 1) {
-      cell.w = m.w;
-      return;
-    }
-    const target = clamp(Math.round(newW), minCell(store.project), m.w - minCell(store.project) * (m.cells.length - 1));
-    const delta = target - cell.w;
-    const right = m.cells[idx + 1];
-    const left = m.cells[idx - 1];
-    if (right && right.w - delta >= minCell(store.project)) {
-      cell.w = target;
-      right.w -= delta;
-    } else if (left && left.w + delta >= minCell(store.project)) {
-      cell.w = target;
-      left.w += delta;
-    } else {
-      cell.w = m.w - minCell(store.project) * (m.cells.length - 1);
-      for (const c of m.cells) if (c !== cell) c.w = minCell(store.project);
-    }
+/** Разделить лист пополам: dir 'v' — вертикальным разделителем, 'h' — горизонтальной полкой-перегородкой. */
+export function splitLeaf(id: string, path: Path, dir: 'v' | 'h'): void {
+  patchModule(id, (m) => {
+    const node = resolveNode(m.root, path);
+    if (!node || node.type !== 'leaf') return;
+    const a = structuredClone(node);
+    const b = structuredClone(node);
+    a.id = uid('l');
+    m.root = replaceNode(m.root, path, {
+      type: 'split',
+      dir,
+      t: CARCASS_T,
+      children: [
+        { size: 1, node: a },
+        { size: 1, node: b },
+      ],
+    });
   });
+  select({ kind: 'module', id }, [...path, 1]);
 }
 
-/** Разделить ячейку пополам. */
-export function splitCell(id: string, idx: number): void {
-  patchModuleCommit(id, (m) => {
-    const cell = m.cells[idx];
-    if (!cell || cell.w < minCell(store.project) * 2) return;
-    const half = Math.floor(cell.w / 2);
-    const a: Cell = { ...structuredClone(cell), w: cell.w - half };
-    const b: Cell = { ...structuredClone(cell), w: half };
-    m.cells.splice(idx, 1, a, b);
+/** Убрать лист: его размер уходит соседу, пустой сплит схлопывается. */
+export function removeLeaf(id: string, path: Path): void {
+  if (path.length === 0) return;
+  patchModule(id, (m) => {
+    m.root = dropLeaf(m.root, path);
   });
+  select({ kind: 'module', id }, path.length > 1 ? path.slice(0, -1) : null);
 }
 
-/** Добавить ячейку: режем пополам самую широкую. */
-export function addCell(id: string): void {
-  const p = store.project;
-  const m = p.modules.find((x) => x.id === id);
-  if (!m) return;
-  let best = -1;
-  let bestW = minCell(p) * 2;
-  m.cells.forEach((c, i) => {
-    if (c.w >= bestW) {
-      bestW = c.w;
-      best = i;
-    }
-  });
-  if (best < 0) {
-    ui.message = 'Ячейки уже узкие — расширьте модуль';
-    renderAll();
-    return;
+function dropLeaf(root: BoxNode, path: Path): BoxNode {
+  if (path.length === 1) {
+    const parent = root;
+    if (parent.type !== 'split') return root;
+    const i = path[0];
+    const neighbors = parent.children.filter((_, j) => j !== i);
+    if (parent.children.length === 1) return root;
+    if (parent.children.length === 2) return neighbors[0].node;
+    parent.children.splice(i, 1);
+    return root;
   }
-  splitCell(id, best);
+  if (root.type !== 'split') return root;
+  const child = root.children[path[0]];
+  child.node = dropLeaf(child.node, path.slice(1));
+  // схлопнуть ставшийся одиночным сплит
+  if (child.node.type === 'split' && child.node.children.length === 1) {
+    child.node = child.node.children[0].node;
+  }
+  // вложенный сплит того же направления схлопываем в родителя
+  if (child.node.type === 'split' && child.node.dir === root.dir && child.node.t === root.t) {
+    const flat = child.node.children;
+    root.children.splice(path[0], 1, ...flat);
+  }
+  return root;
 }
 
-/** Удалить ячейку, её ширина уходит соседу. */
-export function removeCell(id: string, idx: number): void {
-  patchModuleCommit(id, (m) => {
-    if (m.cells.length <= 1) return;
-    const [gone] = m.cells.splice(idx, 1);
-    const target = m.cells[Math.min(idx, m.cells.length - 1)];
-    target.w += gone.w;
+/** Толщина разделителя сплита, содержащего лист по path. */
+export function setDividerT(id: string, path: Path, t: number): void {
+  if (path.length === 0) return;
+  patchModule(id, (m) => {
+    const parentPath = path.slice(0, -1);
+    const node = resolveNode(m.root, parentPath);
+    if (node?.type === 'split') node.t = clamp(Math.round(t), 0, 60);
   });
 }
 
-/** Вкл/выкл фасад у ячейки в точке (x вдоль стены, y от пола). */
-export function toggleCellFacade(id: string, xLocal: number, yFloor: number): void {
-  const p = store.project;
-  const m = p.modules.find((x) => x.id === id);
-  if (!m) return;
-  const idx = cellIndexAt(p, m, xLocal, yFloor);
-  if (idx < 0) return;
-  patchModuleCommit(id, (mm) => {
-    const cell = mm.cells[idx];
-    if (!cell) return;
-    if (cell.facade === null) {
-      cell.facade = 'door';
-      if (!cell.fill) cell.fill = 'дуб лён';
-    } else {
-      cell.facade = null;
-    }
+export function setFace(id: string, path: Path, face: LeafFace): void {
+  patchModule(id, (m) => {
+    const node = resolveNode(m.root, path);
+    if (node?.type === 'leaf') node.face = face;
   });
-  select({ kind: 'module', id }, idx);
 }
 
-/** Тяга границы между ячейками idx и idx+1: pos — координата границы вдоль стены. */
-export function dragCellBoundary(id: string, leftIdx: number, posWallLocal: number): void {
+/** Двойной клик по отсеку: ниша ↔ дверца. */
+export function toggleFace(id: string, path: Path): void {
   const p = store.project;
   const m = p.modules.find((x) => x.id === id);
   if (!m) return;
-  const layout = layoutCells(p, m);
-  const left = layout[leftIdx];
-  const right = layout[leftIdx + 1];
-  if (!left || !right) return;
-  const pairW = left.cell.w + right.cell.w;
-  const target = clamp(Math.round(posWallLocal - left.x), minCell(p), pairW - minCell(p));
+  const node = resolveNode(m.root, path);
+  if (node?.type !== 'leaf') return;
+  const face: LeafFace =
+    node.face.kind === 'open'
+      ? { kind: 'door', hinge: 'left', fill: 'дуб лён' }
+      : { kind: 'open', shelves: 0, shelfPitch: null };
+  setFace(id, path, face);
+}
+
+/**
+ * Тяга разделителя: pos — координата в системе стены
+ * (x вдоль стены для v, y от пола для h).
+ */
+export function dragDivider(id: string, splitPath: Path, after: number, pos: number): void {
+  const p = store.project;
+  const m = p.modules.find((x) => x.id === id);
+  if (!m) return;
+  const { dividers } = layoutModule(p, m);
+  const d = dividers.find(
+    (x) => x.after === after && x.path.length === splitPath.length && x.path.every((v, i) => v === splitPath[i]),
+  );
+  if (!d) return;
+  const split = resolveNode(m.root, splitPath);
+  if (!split || split.type !== 'split') return;
+  const a = split.children[after];
+  const b = split.children[after + 1];
+  if (!a || !b) return;
+  const curLeftScaled = a.size * d.scale;
+  // начало левого/нижнего ребёнка (d.x/d.y — это уже край после него)
+  const childStart = (d.dir === 'v' ? d.x : d.y) - curLeftScaled;
+  // pos трактуем как центр перегородки: вычитаем её полутолщину
+  const target = pos - childStart - d.w / 2;
+  const minScaled = MIN_LEAF;
+  const maxTarget = d.pairLen - d.w - minScaled;
+  const clamped = clamp(target, minScaled, Math.max(minScaled, maxTarget));
+  const shift = clamped - curLeftScaled;
   store.update((pp) => {
-    const t = pp.modules.find((x) => x.id === id);
-    if (!t) return;
-    const a = t.cells[leftIdx];
-    const b = t.cells[leftIdx + 1];
-    if (a && b) {
-      a.w = target;
-      b.w = pairW - target;
-    }
+    const mm = pp.modules.find((x) => x.id === id);
+    if (!mm) return;
+    const node = resolveNode(mm.root, splitPath);
+    if (!node || node.type !== 'split') return;
+    const aa = node.children[after];
+    const bb = node.children[after + 1];
+    if (!aa || !bb) return;
+    const nA = Math.max(MIN_LEAF / d.scale, aa.size + shift / d.scale);
+    const nB = bb.size - (nA - aa.size);
+    if (nB < MIN_LEAF / d.scale) return;
+    aa.size = nA;
+    bb.size = nB;
   }, false);
 }
 
-/** Сменить тип модуля — пересоздаёт секции по умолчанию. */
-export function setModuleKind(id: string, kind: ModuleKind): void {
-  const p = store.project;
-  patchModuleCommit(id, (m) => {
-    m.kind = kind;
-    m.cells = defaultCells(kind, p, m.w, m.h);
-  });
+function resolveNode(root: BoxNode, path: Path): BoxNode | null {
+  let n: BoxNode = root;
+  for (const i of path) {
+    if (n.type !== 'split' || i < 0 || i >= n.children.length) return null;
+    n = n.children[i].node;
+  }
+  return n;
+}
+
+function replaceNode(root: BoxNode, path: Path, replacement: BoxNode): BoxNode {
+  if (path.length === 0) return replacement;
+  if (root.type !== 'split') return root;
+  const next = structuredClone(root) as SplitNode;
+  const i = path[0];
+  if (path.length === 1) next.children[i].node = replacement;
+  else next.children[i].node = replaceNode(next.children[i].node, path.slice(1), replacement);
+  return next;
 }
 
 // ------------------------------------------------------------------ ТВ и розетки
@@ -315,15 +355,19 @@ export function moveTv(cx: number, cy: number): void {
   }, false);
 }
 
-/** Раздвинуть/заменить модули под ТВ открытой нишей. */
+/** Освободить место под ТВ: вырезать контейнер с полностью открытым отсеком. */
 export function makeNicheUnderTv(): void {
   const p = store.project;
   if (!p.tv) return;
   const t = p.tv;
   const draft = structuredClone(p);
   const margin = 100;
-  const lo = Math.max(0, snap(draft, t.centerX - t.w / 2 - margin));
-  const hi = Math.min(draft.walls[t.wall].length, snap(draft, t.centerX + t.w / 2 + margin));
+  const z = cornerZones(draft, t.wall);
+  const lo = Math.max(z.start, snap(draft, t.centerX - t.w / 2 - margin));
+  const hi = Math.min(
+    draft.walls[t.wall].length - z.end,
+    snap(draft, t.centerX + t.w / 2 + margin),
+  );
   const onWall = draft.modules.filter((m) => m.wall === t.wall);
   const others = draft.modules.filter((m) => m.wall !== t.wall);
   const rebuilt: WardModule[] = [];
@@ -336,20 +380,24 @@ export function makeNicheUnderTv(): void {
     if (m.from < lo && lo - m.from >= MIN_W) {
       const left = structuredClone(m);
       left.w = lo - m.from;
-      rescaleCells(left, left.w);
       rebuilt.push(left);
     }
     if (wallEnd(m) > hi && wallEnd(m) - hi >= MIN_W) {
       const right = structuredClone(m);
       right.from = hi;
-      right.w = wallEnd(m) - hi;
-      rescaleCells(right, right.w);
+      right.w = wallEnd(right) - hi;
       rebuilt.push(right);
     }
   }
-  const niche = newModule('tv-niche', t.wall, lo, draft);
-  niche.w = hi - lo;
-  niche.cells = defaultCells('tv-niche', draft, niche.w, niche.h);
+  const niche: WardModule = {
+    id: uid('m'),
+    wall: t.wall,
+    from: lo,
+    w: hi - lo,
+    h: p.ceiling,
+    depth: 450,
+    root: leaf({ kind: 'open', shelves: 0 }),
+  };
   draft.modules = [...others, ...rebuilt, niche];
   store.replace(draft);
   select({ kind: 'module', id: niche.id });

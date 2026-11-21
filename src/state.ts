@@ -1,4 +1,4 @@
-import type { WallId } from './types.ts';
+import type { Path, WallId } from './types.ts';
 
 export interface Selection {
   kind: 'module' | 'tv' | 'socket';
@@ -7,17 +7,17 @@ export interface Selection {
 
 export const ui = {
   sel: null as Selection | null,
-  /** выбранная ячейка внутри выбранного модуля */
-  cell: null as number | null,
+  /** выбранный отсек внутри модуля (путь в дереве нарезки) */
+  path: null as Path | null,
   /** активная стена для кнопок библиотеки */
   wall: 'center' as WallId,
   message: '',
   editing: false,
 };
 
-export function select(sel: Selection | null, cell: number | null = null): void {
+export function select(sel: Selection | null, path: Path | null = null): void {
   ui.sel = sel;
-  ui.cell = sel?.kind === 'module' ? cell : null;
+  ui.path = sel?.kind === 'module' ? path : null;
 }
 
 /** Камера фасадного вида: zoom — px на мм. */

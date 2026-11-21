@@ -6,13 +6,8 @@ import type { Project } from '../types.ts';
 
 const WALL_T = 60; // толщина стены на плане, мм
 
-const KIND_FILL: Record<string, string> = {
-  wardrobe: '#6b5138',
-  shelves: '#57432e',
-  drawers: '#7a5a3c',
-  open: '#3a2d20',
-  'tv-niche': '#43506b',
-};
+const FILL_DEEP = '#6b5138';
+const FILL_SHALLOW = '#43506b';
 
 let svg: SVGSVGElement;
 
@@ -128,9 +123,9 @@ function planRect(
   bad: boolean,
 ): string {
   return `<g data-hit="mod" data-id="${m.id}">
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${KIND_FILL[m.kind] ?? '#555'}" stroke="${bad ? '#ff5252' : isSel ? '#4da3ff' : '#00000088'}" stroke-width="${isSel || bad ? 3 : 2}" vector-effect="non-scaling-stroke"/>
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${m.depth >= 550 ? FILL_DEEP : FILL_SHALLOW}" stroke="${bad ? '#ff5252' : isSel ? '#4da3ff' : '#00000088'}" stroke-width="${isSel || bad ? 3 : 2}" vector-effect="non-scaling-stroke"/>
     <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none"/>
-    <title>${m.id} · ${m.w}×${m.depth}</title>
+    <title>Контейнер ${m.id} · ${m.w}×${m.depth}</title>
   </g>`;
 }
 
