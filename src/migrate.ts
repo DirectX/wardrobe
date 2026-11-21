@@ -1,10 +1,9 @@
-// Миграция проектов v1 (фасад-сетка) и v2 (плоские секции) → v3 (дерево нарезки).
-import type { BoxNode, LeafFace, Project, WardModule } from './types.ts';
-import { CARCASS_T } from './geometry.ts';
-import { leaf, splitV } from './defaults.ts';
+// Миграция проектов v1 (фасад-сетка), v2 (плоские секции), v3 (дерево, относительные веса)
+// → v4 (дерево, абсолютные мм + общие стенки).
+import type { BoxNode, LeafFace, Project, WallId, WardModule } from './types.ts';
 import { uid } from './types.ts';
-
-const MIN_V2 = 120;
+import { CARCASS_T, modulesOn, normalizeTree, wallEnd } from './geometry.ts';
+import { leaf } from './defaults.ts';
 
 interface V1Cell {
   type: 'door' | 'drawer' | 'open' | 'glass' | 'panel';
@@ -22,14 +21,21 @@ interface V2Cell {
   hinge?: 'left' | 'right';
   fill?: string;
   shelves: number;
-  shelfPitch: number | null;
+  shelfPitch?: number | null;
   drawers: number;
 }
 
-type LegacyModule = Omit<WardModule, 'root'> & {
+type LegacyModule = {
+  id: string;
+  wall: WallId;
+  from: number;
+  w: number;
+  h: number;
+  depth: number;
+  kind?: string;
   facade?: V1Row[];
   cells?: V2Cell[];
-  kind?: string;
+  root?: BoxNode;
 };
 
 function faceFromV2(c: V2Cell): LeafFace {
@@ -53,10 +59,15 @@ function treeFromV2Cells(cells: V2Cell[]): BoxNode {
     const c = meaningful[0];
     return c ? leaf(faceFromV2(c)) : leaf({ kind: 'open', shelves: 0 });
   }
-  return splitV(meaningful.map((c) => ({ size: c.w, node: leaf(faceFromV2(c)) })), CARCASS_T);
+  return {
+    type: 'split',
+    dir: 'v',
+    t: CARCASS_T,
+    children: meaningful.map((c) => ({ size: c.w, node: leaf(faceFromV2(c)) })),
+  };
 }
 
-/** v1 (rows×cells) → набор v2-ячеек, дальше общая дорога. */
+/** v1 (rows×cells) → набор v2-ячеек. */
 function cellsFromV1(m: LegacyModule, p: Project): V2Cell[] {
   const rows: V1Row[] = m.facade?.length ? m.facade : [{ weight: 1, cells: [{ type: 'open' }] }];
   const all = rows.flatMap((r) => r.cells);
@@ -108,35 +119,54 @@ function cellsFromV1(m: LegacyModule, p: Project): V2Cell[] {
   return cells;
 }
 
-/** Приводит проект известной версии к v3. null — если не распознан. */
+/** Обеспечивает структуру v4: leftShared/rightShared по соседству, абсолютные размеры. */
+function finalizeV4(proj: Project): Project {
+  for (const wall of ['left', 'center', 'right'] as WallId[]) {
+    const ms = modulesOn(proj, wall);
+    ms.forEach((m, i) => {
+      const prev = ms[i - 1];
+      const next = ms[i + 1];
+      m.leftShared = !!prev && Math.abs(wallEnd(prev) - m.from) < 1;
+      m.rightShared = !!next && Math.abs(wallEnd(m) - next.from) < 1;
+      normalizeTree(proj, m);
+    });
+  }
+  return proj;
+}
+
+/** Приводит проект известной версии к v4. null — если не распознан. */
 export function migrate(input: unknown): Project | null {
   if (!input || typeof input !== 'object') return null;
   const proj = input as Project & { version?: number };
   const version = Number(proj.version);
   if (!proj.walls?.center || !Array.isArray(proj.modules)) return null;
-  if (version === 3 && proj.modules.every((m) => (m as WardModule).root)) {
-    proj.version = 3;
-    return proj;
-  }
-  if (version !== 1 && version !== 2) return null;
-  const legacyModules = proj.modules as unknown as (LegacyModule & Record<string, unknown>)[];
+
+  if (version === 4 && proj.modules.every((m) => m.root && 'leftShared' in m)) return proj;
+  if (version !== 1 && version !== 2 && version !== 3) return null;
+
+  const legacyModules = proj.modules as unknown as LegacyModule[];
   proj.modules = legacyModules.map((lm) => {
-    const cellsV2 =
-      lm.cells ?? (lm.facade ? cellsFromV1(lm, proj) : undefined);
-    const { facade, cells, kind, root, ...rest } = lm as LegacyModule & {
-      kind?: unknown;
-      root?: unknown;
+    let root: BoxNode;
+    if (version === 3 && lm.root) {
+      // v3: относительные веса — оставляем как есть, normalizeTree пересчитает в мм
+      root = structuredClone(lm.root);
+    } else {
+      const cellsV2 = lm.cells ?? (lm.facade ? cellsFromV1(lm, proj) : undefined);
+      root = cellsV2 ? treeFromV2Cells(cellsV2) : leaf({ kind: 'open', shelves: 0 });
+    }
+    const m: WardModule = {
+      id: lm.id || uid('m'),
+      wall: lm.wall,
+      from: lm.from,
+      w: lm.w,
+      h: lm.h,
+      depth: lm.depth,
+      leftShared: false,
+      rightShared: false,
+      root,
     };
-    void facade;
-    void cells;
-    void kind;
-    void root;
-    const m = rest as WardModule;
-    m.id = m.id || uid('m');
-    m.root = cellsV2 ? treeFromV2Cells(cellsV2) : leaf({ kind: 'open', shelves: 0 });
-    void MIN_V2;
     return m;
   });
-  proj.version = 3;
-  return proj;
+  proj.version = 4;
+  return finalizeV4(proj);
 }

@@ -2,8 +2,8 @@ import type { Project } from './types.ts';
 import { defaultProject } from './defaults.ts';
 import { migrate } from './migrate.ts';
 
-const LS_KEY = 'wardrobe:project:v3';
-const LEGACY_KEYS = ['wardrobe:project:v2', 'wardrobe:project:v1'];
+const LS_KEY = 'wardrobe:project:v4';
+const LEGACY_KEYS = ['wardrobe:project:v3', 'wardrobe:project:v2', 'wardrobe:project:v1'];
 
 type Listener = () => void;
 

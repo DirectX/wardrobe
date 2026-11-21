@@ -9,6 +9,8 @@ import {
   setDividerT,
   setFace,
   setFaceGroup,
+  setModuleBox,
+  setSharedWall,
   setSplitDir,
   setSplitT,
   splitLeaf,
@@ -20,6 +22,7 @@ import { getNode, pathEq } from './types.ts';
 import { validate } from './validate.ts';
 import { fitFacade } from './views/facade.ts';
 import { openJson, exportPng, saveJson } from './io.ts';
+import { openPrintReport } from './print.ts';
 import type {
   BoxNode,
   LeafDrawers,
@@ -225,6 +228,7 @@ export function initToolbar(root: HTMLElement): void {
     btn('💾 JSON', () => saveJson(), 'Скачать проект'),
     btn('📂 Открыть', () => openJson(), 'Загрузить проект из JSON'),
     btn('🖼 PNG', () => void exportPng(), 'Сохранить фасад картинкой'),
+    btn('🖨 PDF', () => openPrintReport(), 'Печатный отчёт: чертёж с размерами + спецификация → Сохранить как PDF'),
   );
 }
 
@@ -245,7 +249,7 @@ export function renderLibrary(root: HTMLElement): void {
     h('h3', {}, 'Стенка'),
     h('div', { class: 'hint' }, 'Поставить на стену:'),
     seg,
-    btn('+ Пустой отсек', () => addModule(ui.wall), 'Контейнер на активной стене'),
+    btn('+ Новый модуль', () => addModule(ui.wall), 'Новый модуль (контейнер) на активной стене'),
     h(
       'div',
       { class: 'hint pad-top' },
@@ -309,7 +313,7 @@ export function renderProps(root: HTMLElement): void {
         `Стен: 3 · Контейнеров: ${p.modules.length} · Розеток: ${p.sockets.length}`,
         h('br'),
         h('br'),
-        'Поставьте «Пустой отсек» на стену, затем кликайте отсеки и режьте их: перегородки, ниши, ящики, дверцы.',
+        'Поставьте «Новый модуль» на стену, затем кликайте отсеки и режьте их: перегородки, ниши, ящики, дверцы.',
       ),
     );
     return;
@@ -395,16 +399,35 @@ function renderModuleProps(root: HTMLElement, p: Project, id: string): void {
         }),
     ),
     fieldNum('Отступ, мм', m.from, (v) => patch((t) => (t.from = Math.max(z.start, v)))),
-    fieldNum('Ширина, мм', m.w, (v) => patch((t) => (t.w = Math.max(200, v)))),
-    fieldNum('Высота, мм', m.h, (v) => patch((t) => (t.h = Math.max(200, Math.min(p.ceiling, v))))),
-    fieldNum('Глубина, мм', m.depth, (v) => patch((t) => (t.depth = Math.max(150, v)))),
+    fieldNum('Ширина, мм', m.w, (v) => setModuleBox(m.id, { w: Math.max(200, v) })),
+    fieldNum('Высота, мм', m.h, (v) => setModuleBox(m.id, { h: Math.max(200, Math.min(p.ceiling, v)) })),
+    fieldNum('Глубина, мм', m.depth, (v) => setModuleBox(m.id, { depth: Math.max(150, v) })),
     h(
       'div',
       { class: 'row' },
-      btn('↑ Под потолок', () => patch((t) => (t.h = p.ceiling))),
+      btn('↑ Под потолок', () => setModuleBox(m.id, { h: p.ceiling })),
       btn('⧉ Дублировать', () => duplicateModule(m.id)),
       btn('✕ Удалить', () => deleteSelected()),
     ),
+  );
+
+  // общие стенки
+  const chk = (label: string, checked: boolean, onchange: (v: boolean) => void) => {
+    const id = `chk-${label}-${m.id}`;
+    const input = h('input', { type: 'checkbox', id, checked: checked ? 'checked' : undefined });
+    if (checked) input.checked = true;
+    guardInput(input);
+    input.addEventListener('change', () => onchange(input.checked));
+    return h('label', { class: 'chk', for: id }, input, h('span', {}, label));
+  };
+  root.append(
+    h(
+      'div',
+      { class: 'row' },
+      chk('лев. стенка общая', m.leftShared, (v) => setSharedWall(m.id, 'l', v)),
+      chk('прав. стенка общая', m.rightShared, (v) => setSharedWall(m.id, 'r', v)),
+    ),
+    h('div', { class: 'hint' }, 'Общая = одна панель 18 мм на стыке соседей (9 мм на каждый модуль). Включается автоматически при установке вплотную.'),
   );
   if (z.start > 0 || z.end > 0) {
     root.append(

@@ -6,6 +6,7 @@ import {
   cornerZones,
   dividerSnapCandidates,
   findModule,
+  interiorBox,
   layoutModule,
   modulesOn,
   shelfYsIn,
@@ -29,28 +30,28 @@ import type { DividerBox, LeafBox } from '../geometry.ts';
 import type { Path, Project, WardModule, WallId } from '../types.ts';
 
 const COL = {
-  plate: '#151922',
-  plateStroke: '#2b313d',
-  floor: '#48505e',
-  tick: '#3d4450',
-  dim: '#8b94a3',
-  carcass: '#5d4531',
-  partition: '#4a3524',
-  interior: '#241c15',
-  shelf: '#8a6a48',
-  plinth: '#2a2119',
-  accent: '#4da3ff',
-  cell: '#ffd166',
-  danger: '#ff5252',
-  warn: '#ffb74d',
-  corner: '#39414f',
+  plate: '#e9ebef',
+  plateStroke: '#c4cad3',
+  floor: '#9aa2ae',
+  tick: '#b6bdc8',
+  dim: '#6b7280',
+  carcass: '#b08a63',
+  partition: '#96724e',
+  interior: '#f2ede6',
+  shelf: '#c9a877',
+  plinth: '#8a6a4a',
+  accent: '#2f7fd4',
+  cell: '#e0a800',
+  danger: '#d93b3b',
+  warn: '#c07a1a',
+  corner: '#aab2bd',
 };
 
 const DEFAULT_FILL: Record<string, string> = {
   door: '#c9a877',
   drawers: '#c9a877',
   panel: '#c2c6cc',
-  open: '#241c15',
+  open: '#f2ede6',
 };
 
 function fillOf(fill: string | undefined, kind: string): string {
@@ -188,9 +189,9 @@ export function renderFacade(): void {
     const top = fy(t.centerY + t.h / 2);
     parts.push(
       `<g data-hit="tv" style="cursor:grab">`,
-      `<rect x="${left}" y="${top}" width="${t.w}" height="${t.h}" rx="10" fill="#0c0e12" stroke="${bad ? COL.danger : isSel ? COL.accent : '#59616e'}" stroke-width="${bad || isSel ? 3 : 1.5}" vector-effect="non-scaling-stroke"/>`,
-      `<rect x="${left + t.w * 0.03}" y="${top + t.h * 0.04}" width="${t.w * 0.94}" height="${t.h * 0.8}" rx="4" fill="#1d2836"/>`,
-      `<text x="${elevOf(p, t.wall, x0, t.centerX)}" y="${fy(t.centerY) + 18}" font-size="${Math.min(90, t.h * 0.3)}" fill="#42536b" text-anchor="middle">ТВ</text>`,
+      `<rect x="${left}" y="${top}" width="${t.w}" height="${t.h}" rx="10" fill="#20242b" stroke="${bad ? COL.danger : isSel ? COL.accent : '#8b93a0'}" stroke-width="${bad || isSel ? 3 : 1.5}" vector-effect="non-scaling-stroke"/>`,
+      `<rect x="${left + t.w * 0.03}" y="${top + t.h * 0.04}" width="${t.w * 0.94}" height="${t.h * 0.8}" rx="4" fill="#3d4d63"/>`,
+      `<text x="${elevOf(p, t.wall, x0, t.centerX)}" y="${fy(t.centerY) + 18}" font-size="${Math.min(90, t.h * 0.3)}" fill="#aebdd2" text-anchor="middle">ТВ</text>`,
       `</g>`,
     );
   }
@@ -203,7 +204,7 @@ export function renderFacade(): void {
     const cy = fy(s.y);
     parts.push(
       `<g data-hit="socket" data-id="${s.id}" style="cursor:grab">`,
-      `<rect x="${cx - 42}" y="${cy - 42}" width="84" height="84" rx="14" fill="${bad ? '#3a1d1d' : '#f2efe8'}" stroke="${bad ? COL.danger : isSel ? COL.accent : '#5c6470'}" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
+      `<rect x="${cx - 42}" y="${cy - 42}" width="84" height="84" rx="14" fill="${bad ? '#f6d7d7' : '#ffffff'}" stroke="${bad ? COL.danger : isSel ? COL.accent : '#9aa2ae'}" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
       `<circle cx="${cx - 16}" cy="${cy}" r="7" fill="${bad ? COL.danger : '#20242b'}"/>`,
       `<circle cx="${cx + 16}" cy="${cy}" r="7" fill="${bad ? COL.danger : '#20242b'}"/>`,
       `</g>`,
@@ -287,13 +288,16 @@ function renderModule(
 
   const X = span(m.from, m.w);
   const Y = fy(m.h);
-  const T = CARCASS_T;
   const out: string[] = [];
   out.push(
     `<g data-hit="mod" data-id="${m.id}" data-wall="${wall}" style="cursor:grab">`,
-    `<title>Контейнер · ${m.w}×${m.h}×${m.depth} мм</title>`,
+    `<title>Контейнер · ${m.w}×${m.h}×${m.depth} мм${m.leftShared ? ' · лев. стенка общая' : ''}${m.rightShared ? ' · прав. стенка общая' : ''}</title>`,
     `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="${COL.carcass}"/>`,
-    `<rect x="${X + T / 2}" y="${Y + T / 2}" width="${Math.max(0, m.w - T)}" height="${Math.max(0, m.h - T)}" fill="${COL.interior}"/>`,
+  );
+  // нутро — ровно то, что использует раскладка (учитывает общие стенки)
+  const ib = interiorBox(p, m);
+  out.push(
+    `<rect x="${span(ib.x, ib.w)}" y="${fy(ib.y + ib.h)}" width="${Math.max(0, ib.w)}" height="${Math.max(0, ib.h)}" fill="${COL.interior}"/>`,
   );
 
   const { leaves, dividers } = layoutModule(p, m);
@@ -306,7 +310,7 @@ function renderModule(
     );
 
   out.push(
-    `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="none" stroke="${hasError ? COL.danger : isSel ? COL.accent : '#00000088'}" stroke-width="${hasError || isSel ? 2.5 : 1.5}" vector-effect="non-scaling-stroke"/>`,
+    `<rect x="${X}" y="${Y}" width="${m.w}" height="${m.h}" fill="none" stroke="${hasError ? COL.danger : isSel ? COL.accent : '#00000055'}" stroke-width="${hasError || isSel ? 2.5 : 1.5}" vector-effect="non-scaling-stroke"/>`,
     `</g>`,
   );
 
@@ -324,8 +328,8 @@ function renderModule(
           `<g data-hit="divider" data-id="${m.id}" data-path="${label}" data-after="${d.after}" data-dir="v" style="cursor:col-resize">`,
           `<rect x="${cx - 15}" y="${topY}" width="30" height="${dh}" fill="${COL.cell}" opacity="0.18"/>`,
           `<rect x="${cx - 18}" y="${topY + (dh - 140) / 2}" width="36" height="${Math.min(140, dh * 0.6)}" rx="11" fill="${COL.cell}"/>`,
-          `<line x1="${cx - 4}" y1="${topY + dh / 2 - 16}" x2="${cx - 4}" y2="${topY + dh / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
-          `<line x1="${cx + 4}" y1="${topY + dh / 2 - 16}" x2="${cx + 4}" y2="${topY + dh / 2 + 16}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<line x1="${cx - 4}" y1="${topY + dh / 2 - 16}" x2="${cx - 4}" y2="${topY + dh / 2 + 16}" stroke="#5a4400" stroke-width="3"/>`,
+          `<line x1="${cx + 4}" y1="${topY + dh / 2 - 16}" x2="${cx + 4}" y2="${topY + dh / 2 + 16}" stroke="#5a4400" stroke-width="3"/>`,
           `</g>`,
         );
       } else {
@@ -336,8 +340,8 @@ function renderModule(
           `<g data-hit="divider" data-id="${m.id}" data-path="${label}" data-after="${d.after}" data-dir="h" style="cursor:row-resize">`,
           `<rect x="${leftX}" y="${cy - 15}" width="${d.w}" height="30" fill="${COL.cell}" opacity="0.18"/>`,
           `<rect x="${leftX + (d.w - 140) / 2}" y="${cy - 18}" width="${Math.min(140, d.w * 0.6)}" height="36" rx="11" fill="${COL.cell}"/>`,
-          `<line x1="${leftX + d.w / 2 - 16}" y1="${cy - 4}" x2="${leftX + d.w / 2 + 16}" y2="${cy - 4}" stroke="#3a2c00" stroke-width="3"/>`,
-          `<line x1="${leftX + d.w / 2 - 16}" y1="${cy + 4}" x2="${leftX + d.w / 2 + 16}" y2="${cy + 4}" stroke="#3a2c00" stroke-width="3"/>`,
+          `<line x1="${leftX + d.w / 2 - 16}" y1="${cy - 4}" x2="${leftX + d.w / 2 + 16}" y2="${cy - 4}" stroke="#5a4400" stroke-width="3"/>`,
+          `<line x1="${leftX + d.w / 2 - 16}" y1="${cy + 4}" x2="${leftX + d.w / 2 + 16}" y2="${cy + 4}" stroke="#5a4400" stroke-width="3"/>`,
           `</g>`,
         );
       }
@@ -383,7 +387,7 @@ function renderLeaf(ctx: RenderCtx, m: WardModule, lb: LeafBox, moduleSelected: 
   if (face.kind === 'open') {
     for (const sy of shelfYsIn(lb.y, lb.h, face.shelves, face.shelfPitch)) {
       out.push(
-        `<rect x="${x + 6}" y="${fy(sy) - 8}" width="${Math.max(0, lb.w - 12)}" height="16" fill="${COL.shelf}" stroke="#00000044" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+        `<rect x="${x + 6}" y="${fy(sy) - 8}" width="${Math.max(0, lb.w - 12)}" height="16" fill="${COL.shelf}" stroke="#00000028" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
       );
     }
   } else {
@@ -393,13 +397,13 @@ function renderLeaf(ctx: RenderCtx, m: WardModule, lb: LeafBox, moduleSelected: 
       const dh = lb.h / n;
       for (let d = 0; d < n; d++) {
         out.push(
-          `<rect x="${x}" y="${fy(lb.y + dh * (d + 1))}" width="${lb.w}" height="${dh}" fill="${f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+          `<rect x="${x}" y="${fy(lb.y + dh * (d + 1))}" width="${lb.w}" height="${dh}" fill="${f}" stroke="#00000030" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
           `<line x1="${x + lb.w * 0.3}" y1="${fy(lb.y + dh * (d + 0.5))}" x2="${x + lb.w * 0.7}" y2="${fy(lb.y + dh * (d + 0.5))}" stroke="#2f2620" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`,
         );
       }
     } else {
       out.push(
-        `<rect x="${x}" y="${y}" width="${lb.w}" height="${lb.h}" fill="${face.kind === 'door' && face.glass ? '#9fc3d888' : f}" stroke="#00000066" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+        `<rect x="${x}" y="${y}" width="${lb.w}" height="${lb.h}" fill="${face.kind === 'door' && face.glass ? '#9fc3d888' : f}" stroke="#00000030" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
       );
       if (face.kind === 'door') {
         // зеркалит ex(): данные считаем в local-координатах стены
@@ -411,7 +415,7 @@ function renderLeaf(ctx: RenderCtx, m: WardModule, lb: LeafBox, moduleSelected: 
         const hx = span(dataHingeEdge, 0) + (hingeAtDataLeft ? (mirror ? -8 : 8) : mirror ? 8 : -8);
         const gx = span(dataGrip, 0) + (mirror ? (hingeAtDataLeft ? 42 : -42) : hingeAtDataLeft ? -42 : 42);
         out.push(
-          `<line x1="${hx}" y1="${y + 12}" x2="${hx}" y2="${y + lb.h - 12}" stroke="#00000044" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
+          `<line x1="${hx}" y1="${y + 12}" x2="${hx}" y2="${y + lb.h - 12}" stroke="#00000028" stroke-width="2" vector-effect="non-scaling-stroke"/>`,
           `<rect x="${gx - 6}" y="${y + lb.h / 2 - Math.min(110, lb.h * 0.18)}" width="12" height="${Math.min(220, lb.h * 0.36)}" rx="6" fill="#2f2620"/>`,
         );
         if (face.glass) {
@@ -635,15 +639,17 @@ export function attachFacade(el: SVGSVGElement): void {
       const id = drag.id;
       if (dm) {
         const snapArg = {
-          candidates: dividerSnapCandidates(p, dm, axis, path, after),
-          tol: snapTolerance(p),
+          candidates: dividerSnapCandidates(p, wall, axis, { moduleId: id, path, after }),
+          tol: snapTolerance(p, facadeView.zoom),
         };
         const pos = axis === 'h' ? floorY(mm) : dataOf(p, wall, wallStart(p)[wall], mm.x);
         let snapped: number | null = null;
+        let bestDist = Infinity;
         for (const c of snapArg.candidates) {
-          if (Math.abs(c - pos) <= snapArg.tol) {
+          const dist = Math.abs(c - pos);
+          if (dist <= snapArg.tol && dist < bestDist) {
+            bestDist = dist;
             snapped = c;
-            break;
           }
         }
         drag.snapAt = snapped;

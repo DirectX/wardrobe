@@ -6,8 +6,8 @@ import type { Project } from '../types.ts';
 
 const WALL_T = 60; // толщина стены на плане, мм
 
-const FILL_DEEP = '#6b5138';
-const FILL_SHALLOW = '#43506b';
+const FILL_DEEP = '#c9a877';
+const FILL_SHALLOW = '#a8b8d8';
 
 let svg: SVGSVGElement;
 
@@ -39,16 +39,16 @@ export function renderPlan(): void {
   parts.push(`<g font-family="ui-sans-serif, system-ui, sans-serif">`);
 
   // пол комнаты
-  parts.push(`<rect x="0" y="0" width="${Lc}" height="${depthMax}" fill="#12151b"/>`);
+  parts.push(`<rect x="0" y="0" width="${Lc}" height="${depthMax}" fill="#f7f8fa"/>`);
   // стены
-  parts.push(`<rect x="${-WALL_T}" y="${-WALL_T}" width="${Lc + 2 * WALL_T}" height="${WALL_T}" fill="#2a2f3a"/>`);
-  parts.push(`<rect x="${-WALL_T}" y="${-WALL_T}" width="${WALL_T}" height="${Ll + WALL_T}" fill="#2a2f3a"/>`);
-  parts.push(`<rect x="${Lc}" y="${-WALL_T}" width="${WALL_T}" height="${Lr + WALL_T}" fill="#2a2f3a"/>`);
+  parts.push(`<rect x="${-WALL_T}" y="${-WALL_T}" width="${Lc + 2 * WALL_T}" height="${WALL_T}" fill="#c9ced6"/>`);
+  parts.push(`<rect x="${-WALL_T}" y="${-WALL_T}" width="${WALL_T}" height="${Ll + WALL_T}" fill="#c9ced6"/>`);
+  parts.push(`<rect x="${Lc}" y="${-WALL_T}" width="${WALL_T}" height="${Lr + WALL_T}" fill="#c9ced6"/>`);
 
   // открытая сторона
   parts.push(
-    `<line x1="${-WALL_T}" y1="${depthMax}" x2="${Lc + WALL_T}" y2="${depthMax}" stroke="#3a404b" stroke-width="2" stroke-dasharray="60 50" vector-effect="non-scaling-stroke"/>`,
-    `<text x="${Lc / 2}" y="${depthMax + 120}" font-size="80" fill="#5c6470" text-anchor="middle">проход</text>`,
+    `<line x1="${-WALL_T}" y1="${depthMax}" x2="${Lc + WALL_T}" y2="${depthMax}" stroke="#9aa2ae" stroke-width="2" stroke-dasharray="60 50" vector-effect="non-scaling-stroke"/>`,
+    `<text x="${Lc / 2}" y="${depthMax + 120}" font-size="80" fill="#8b93a0" text-anchor="middle">проход</text>`,
   );
 
   // модули: центральная стена
@@ -94,19 +94,19 @@ export function renderPlan(): void {
     }
     parts.push(
       `<g data-hit="socket" data-id="${s.id}">
-        <circle cx="${cx}" cy="${cy}" r="46" fill="${bad ? '#3a1d1d' : '#f2efe8'}" stroke="${bad ? '#ff5252' : isSel ? '#4da3ff' : '#5c6470'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+        <circle cx="${cx}" cy="${cy}" r="46" fill="${bad ? '#f6d7d7' : '#ffffff'}" stroke="${bad ? '#d93b3b' : isSel ? '#2f7fd4' : '#9aa2ae'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
         <title>Розетка: ${s.x} мм от угла, высота ${s.y}</title>
       </g>`,
     );
   }
 
   // размеры
-  parts.push(`<text x="${Lc / 2}" y="${-WALL_T - 70}" font-size="90" fill="#8b94a3" text-anchor="middle">${Lc}</text>`);
+  parts.push(`<text x="${Lc / 2}" y="${-WALL_T - 70}" font-size="90" fill="#6b7280" text-anchor="middle">${Lc}</text>`);
   parts.push(
-    `<text x="${-WALL_T - 70}" y="${Ll / 2}" font-size="80" fill="#8b94a3" text-anchor="middle" transform="rotate(-90 ${-WALL_T - 70} ${Ll / 2})">${Ll}</text>`,
+    `<text x="${-WALL_T - 70}" y="${Ll / 2}" font-size="80" fill="#6b7280" text-anchor="middle" transform="rotate(-90 ${-WALL_T - 70} ${Ll / 2})">${Ll}</text>`,
   );
   parts.push(
-    `<text x="${Lc + WALL_T + 70}" y="${Lr / 2}" font-size="80" fill="#8b94a3" text-anchor="middle" transform="rotate(90 ${Lc + WALL_T + 70} ${Lr / 2})">${Lr}</text>`,
+    `<text x="${Lc + WALL_T + 70}" y="${Lr / 2}" font-size="80" fill="#6b7280" text-anchor="middle" transform="rotate(90 ${Lc + WALL_T + 70} ${Lr / 2})">${Lr}</text>`,
   );
 
   parts.push(`</g>`);
@@ -123,7 +123,7 @@ function planRect(
   bad: boolean,
 ): string {
   return `<g data-hit="mod" data-id="${m.id}">
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${m.depth >= 550 ? FILL_DEEP : FILL_SHALLOW}" stroke="${bad ? '#ff5252' : isSel ? '#4da3ff' : '#00000088'}" stroke-width="${isSel || bad ? 3 : 2}" vector-effect="non-scaling-stroke"/>
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${m.depth >= 550 ? FILL_DEEP : FILL_SHALLOW}" stroke="${bad ? '#d93b3b' : isSel ? '#2f7fd4' : '#00000055'}" stroke-width="${isSel || bad ? 3 : 2}" vector-effect="non-scaling-stroke"/>
     <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none"/>
     <title>Контейнер ${m.id} · ${m.w}×${m.depth}</title>
   </g>`;
@@ -131,7 +131,7 @@ function planRect(
 
 function planTv(x: number, y: number, w: number, h: number, isSel: boolean): string {
   return `<g data-hit="tv" data-id="tv">
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#dfe3ea" stroke="${isSel ? '#4da3ff' : '#0b0d10'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#20242b" stroke="${isSel ? '#2f7fd4' : '#565e6b'}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
     <title>Телевизор</title>
   </g>`;
 }

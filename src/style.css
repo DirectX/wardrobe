@@ -1,14 +1,14 @@
 :root {
-  --bg: #101318;
-  --panel: #171b22;
-  --panel2: #1d222b;
-  --border: #2a3140;
-  --text: #dfe3ea;
-  --dim: #8b94a3;
-  --accent: #4da3ff;
-  --danger: #ff5252;
-  --warn: #ffb74d;
-  color-scheme: dark;
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel2: #f0f2f5;
+  --border: #d6dae1;
+  --text: #23272f;
+  --dim: #6b7280;
+  --accent: #2f7fd4;
+  --danger: #d93b3b;
+  --warn: #c07a1a;
+  color-scheme: light;
 }
 
 * {
@@ -163,7 +163,7 @@ button:hover {
 button.active,
 .seg button.active {
   background: var(--accent);
-  color: #08131f;
+  color: #ffffff;
   border-color: var(--accent);
 }
 
@@ -309,10 +309,19 @@ select:focus {
 }
 
 .tree-row:hover {
-  background: #232a36;
+  background: #e8ecf2;
 }
 
 .tree-row.sel {
   background: var(--accent);
-  color: #08131f;
+  color: #ffffff;
+}
+
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
 }

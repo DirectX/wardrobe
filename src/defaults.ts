@@ -33,7 +33,7 @@ export const FACE_LABEL: Record<LeafFace['kind'], string> = {
   panel: 'Панель',
 };
 
-// ---------------------------------------------------------- builders (для пресетов и миграции)
+// ---------------------------------------------------------- builders
 
 export const leaf = (face: LeafFace): { type: 'leaf'; id: string; face: LeafFace } => ({
   type: 'leaf',
@@ -41,99 +41,137 @@ export const leaf = (face: LeafFace): { type: 'leaf'; id: string; face: LeafFace
   face: { ...face },
 });
 
-/** вертикальный сплит: доли — относительные размеры */
-export const splitV = (parts: Array<{ size?: number; node: BoxNode }>, t = CARCASS_T): BoxNode => ({
+/** вертикальный сплит: size — абсолютные мм вдоль ширины */
+export const splitV = (parts: Array<{ size: number; node: BoxNode }>, t = CARCASS_T): BoxNode => ({
   type: 'split',
   dir: 'v',
   t,
-  children: parts.map((x): SplitChild => ({ size: x.size ?? 1, node: x.node })),
+  children: parts.map((x): SplitChild => ({ size: x.size, node: x.node })),
 });
 
-export const splitH = (parts: Array<{ size?: number; node: BoxNode }>, t = CARCASS_T): BoxNode => ({
+/** горизонтальный сплит: size — абсолютные мм вдоль высоты */
+export const splitH = (parts: Array<{ size: number; node: BoxNode }>, t = CARCASS_T): BoxNode => ({
   type: 'split',
   dir: 'h',
   t,
-  children: parts.map((x): SplitChild => ({ size: x.size ?? 1, node: x.node })),
+  children: parts.map((x): SplitChild => ({ size: x.size, node: x.node })),
 });
 
-export const newModule = (wall: WallId, from: number, w: number, p: Project): WardModule => ({
+export const newModule = (
+  wall: WallId,
+  from: number,
+  w: number,
+  p: Project,
+  over: Partial<WardModule> = {},
+): WardModule => ({
   id: uid('m'),
   wall,
   from,
   w,
   h: p.ceiling,
   depth: 450,
+  leftShared: false,
+  rightShared: false,
   root: leaf({ kind: 'open', shelves: 0 }),
+  ...over,
 });
 
 export function defaultProject(): Project {
+  const ceiling = 2700;
   const p: Project = {
-    version: 3,
+    version: 4,
     name: 'Гостиная',
-    ceiling: 2700,
+    ceiling,
     base: 80,
     grid: 50,
-    walls: { left: { length: 600 }, center: { length: 3500 }, right: { length: 600 } },
+    walls: { left: { length: 1200 }, center: { length: 3500 }, right: { length: 1200 } },
     modules: [],
     tv: null,
     sockets: [],
   };
-  const doors = (n: number): BoxNode =>
+
+  // Внутренняя высота короба (вычитаем цоколь 80 и верх/низ по 18)
+  const innerH = ceiling - 80 - 2 * CARCASS_T; // 2586
+
+  // двери — равные вертикальные секции
+  const doors = (n: number, widthMm: number): BoxNode =>
     splitV(
       Array.from({ length: n }, (_, i) => ({
+        size: Math.round((widthMm - (n - 1) * CARCASS_T) / n),
         node: leaf({
-          kind: 'door',
-          hinge: i % 2 === 0 ? 'left' : 'right',
+          kind: 'door' as const,
+          hinge: (i % 2 === 0 ? 'left' : 'right') as 'left' | 'right',
           fill: 'дуб лён',
         }),
       })),
     );
+
+  const m1w = 1300;
+  const m1Inner = m1w - 2 * CARCASS_T;
   const m1: WardModule = {
     id: uid('m'),
     wall: 'center',
     from: 0,
-    w: 1300,
-    h: p.ceiling,
+    w: m1w,
+    h: ceiling,
     depth: 600,
+    leftShared: false,
+    rightShared: true,
     root: splitH(
       [
-        { size: 2000, node: doors(2) },
-        { size: p.ceiling - 2000 - 80 - 36, node: splitV([{ node: doors(1) }, { size: 0.5, node: leaf({ kind: 'open', shelves: 2 }) }]) },
+        { size: 2000, node: doors(2, m1Inner) },
+        {
+          size: innerH - 2000 - 16,
+          node: splitV([
+            { size: Math.round(m1Inner * 0.6), node: doors(1, m1Inner * 0.6) },
+            { size: Math.round(m1Inner * 0.4) - 18, node: leaf({ kind: 'open', shelves: 2 }) },
+          ]),
+        },
       ],
       16,
     ),
   };
+
+  const nicheW = 1100;
   const niche: WardModule = {
     id: uid('m'),
     wall: 'center',
     from: 1300,
-    w: 1100,
-    h: p.ceiling,
+    w: nicheW,
+    h: ceiling,
     depth: 450,
+    leftShared: true,
+    rightShared: true,
     root: splitH(
       [
         { size: 1400, node: leaf({ kind: 'open', shelves: 0 }) },
         { size: 400, node: leaf({ kind: 'drawers', drawers: 2, fill: 'дуб лён' }) },
-        { size: p.ceiling - 1400 - 400 - 80 - 36, node: leaf({ kind: 'open', shelves: 1 }) },
+        { size: innerH - 1400 - 400 - 32, node: leaf({ kind: 'open', shelves: 1 }) },
       ],
       16,
     ),
   };
+
+  const m3w = 1100;
+  const m3Inner = m3w - 2 * CARCASS_T;
   const m3: WardModule = {
     id: uid('m'),
     wall: 'center',
     from: 2400,
-    w: 1100,
-    h: p.ceiling,
+    w: m3w,
+    h: ceiling,
     depth: 600,
+    leftShared: true,
+    rightShared: false,
     root: splitH(
       [
-        { size: 2000, node: doors(2) },
-        { size: p.ceiling - 2000 - 80 - 36, node: doors(1) },
+        { size: 2000, node: doors(2, m3Inner) },
+        { size: innerH - 2000 - 16, node: doors(1, m3Inner) },
       ],
       16,
     ),
   };
+
   p.modules = [m1, niche, m3];
   p.tv = { wall: 'center', centerX: 1850, centerY: 1150, w: 1240, h: 720 };
   p.sockets = [

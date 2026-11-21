@@ -63,7 +63,7 @@ export async function exportPng(): Promise<void> {
   canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  ctx.fillStyle = '#14161a';
+  ctx.fillStyle = '#f4f5f7';
   ctx.fillRect(0, 0, width, height);
   ctx.drawImage(img, 0, 0, width, height);
   const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));

@@ -1,7 +1,9 @@
-// Доменная модель v3. Все размеры — в миллиметрах.
-// Идея: модуль — это короб (контейнер), внутри — дерево нарезки:
-//_split_ (вертикальная/горизонтальная, с толщиной перегородки) и _лист_ (отсек
-// с лицом: ниша с полками, дверь, ящики, панель).
+// Доменная модель v4. Все размеры — в миллиметрах.
+//
+// Ключевое отличие v4: размеры детей сплита — АБСОЛЮТНЫЕ мм, а не относительные
+// веса. Поэтому перетаскивание перегородки меняет только два смежных проёма,
+// а остальные перегородки группы стоят на месте. Пропорциональный пересчёт
+// всего дерева происходит только при изменении габарита контейнера целиком.
 
 export type WallId = 'left' | 'center' | 'right';
 
@@ -11,7 +13,7 @@ export interface LeafOpen {
   kind: 'open';
   /** ниша: видно нутро и полки */
   shelves: number;
-/** если задано — шаг полки от низа отсека */
+  /** если задано — шаг полки от низа отсека */
   shelfPitch?: number | null;
 }
 export interface LeafDoor {
@@ -43,16 +45,16 @@ export interface LeafNode {
 }
 
 export interface SplitChild {
-  /** размер вдоль оси сплита (мм, относительный — layout нормализует под короб) */
+  /** размер вдоль оси сплита, мм (абсолютный) */
   size: number;
   node: BoxNode;
 }
 
 export interface SplitNode {
   type: 'split';
-  /** v: дети слева направо; h: сверху вниз */
+  /** v: дети слева направо (ось — ширина); h: сверху вниз (ось — высота) */
   dir: 'v' | 'h';
-  /** толщина перегородки между детьми */
+  /** толщина перегородки между детьми, мм */
   t: number;
   children: SplitChild[];
 }
@@ -68,6 +70,12 @@ export interface WardModule {
   w: number;
   h: number;
   depth: number;
+  /**
+   * Боковая стенка общая с соседним модулем: на стыке одна панель 18 мм,
+   * каждый модуль «владеет» её половиной (9 мм). false — своя панель 18 мм.
+   */
+  leftShared: boolean;
+  rightShared: boolean;
   root: BoxNode;
 }
 
@@ -91,7 +99,7 @@ export interface WallSpec {
 }
 
 export interface Project {
-  version: 3;
+  version: 4;
   name: string;
   ceiling: number;
   base: number;
@@ -117,8 +125,12 @@ export function uid(prefix: string): string {
 export type Path = number[];
 
 export function pathEq(a: Path | null, b: Path | null): boolean {
-  if (!a || !b) return a === b || (!a && !b);
+  if (!a || !b) return !a && !b;
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+export function pathKey(path: Path): string {
+  return path.join('.');
 }
 
 export function getNode(root: BoxNode, path: Path): BoxNode | null {
@@ -128,30 +140,6 @@ export function getNode(root: BoxNode, path: Path): BoxNode | null {
     n = n.children[i].node;
   }
   return n;
-}
-
-export function parentSplit(root: BoxNode, path: Path): { split: SplitNode; index: number } | null {
-  if (path.length === 0) return null;
-  const parentPath = path.slice(0, -1);
-  const parent = getNode(root, parentPath);
-  const index = path[path.length - 1];
-  if (parent?.type === 'split' && index >= 0 && index < parent.children.length) {
-    return { split: parent, index };
-  }
-  return null;
-}
-
-export function newLeaf(face?: Partial<LeafFace> & { kind?: LeafFace['kind'] }): LeafNode {
-  const kind = face?.kind ?? 'open';
-  const base: LeafFace =
-    kind === 'door'
-      ? { kind: 'door', hinge: 'left', ...(face as object) }
-      : kind === 'drawers'
-        ? { kind: 'drawers', drawers: 3, ...(face as object) }
-        : kind === 'panel'
-          ? { kind: 'panel', ...(face as object) }
-          : { kind: 'open', shelves: 0, shelfPitch: null, ...(face as object) };
-  return { type: 'leaf', id: uid('l'), face: base as LeafFace };
 }
 
 export function isLeafFrontOpen(node: BoxNode | null): boolean {

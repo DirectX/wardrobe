@@ -5,6 +5,8 @@ export const WALLS: WallId[] = ['left', 'center', 'right'];
 export const WALL_GAP = 180;
 /** толщина корпуса/перегородки по умолчанию, мм */
 export const CARCASS_T = 18;
+/** половина общей стенки — каждый соседний модуль владеет 9 мм */
+export const HALF_WALL = CARCASS_T / 2;
 
 export function wallStart(p: Project): Record<WallId, number> {
   const center = p.walls.left.length + WALL_GAP;
@@ -48,6 +50,21 @@ export function wallEnd(m: WardModule): number {
 
 export function findModule(p: Project, id: string): WardModule | undefined {
   return p.modules.find((m) => m.id === id);
+}
+
+/**
+ * Фактическая толщина левой/правой стенки модуля в мм:
+ *  - общая с соседом → 9 (половина панели 18)
+ *  - своя → 18
+ */
+export function wallT(m: WardModule, side: 'l' | 'r'): number {
+  return side === 'l'
+    ? m.leftShared
+      ? HALF_WALL
+      : CARCASS_T
+    : m.rightShared
+      ? HALF_WALL
+      : CARCASS_T;
 }
 
 // ------------------------------------------------------------------ углы
@@ -103,22 +120,29 @@ export interface DividerBox {
   y: number;
   w: number;
   h: number;
-  /** масштаб: размер из дерева * scale = размер на чертеже */
-  scale: number;
-  /** суммарный размер пары детей (с разделителем) в чертёжных мм */
-  pairLen: number;
 }
 
+/**
+ * Внутренняя полезная зона модуля с учётом общих/своих стенок.
+ * Общая стенка = 9 мм на каждый модуль стыка.
+ */
 export function interiorBox(p: Project, m: WardModule) {
+  const tL = wallT(m, 'l');
+  const tR = wallT(m, 'r');
   const T = CARCASS_T;
   return {
-    x: m.from + T,
+    x: m.from + tL,
     y: p.base + T,
-    w: Math.max(10, m.w - 2 * T),
+    w: Math.max(10, m.w - tL - tR),
     h: Math.max(10, m.h - p.base - 2 * T),
   };
 }
 
+/**
+ * Раскладка дерева в абсолютные координаты.
+ * child.size — мм вдоль оси сплита. Если сумма children.size + (n-1)*t ≠ axisLen,
+ * выполняется ПРОПОРЦИОНАЛЬНАЯ нормализация (это нужно только при ресайзе модуля).
+ */
 export function layoutModule(p: Project, m: WardModule): { leaves: LeafBox[]; dividers: DividerBox[] } {
   const leaves: LeafBox[] = [];
   const dividers: DividerBox[] = [];
@@ -135,18 +159,20 @@ export function layoutModule(p: Project, m: WardModule): { leaves: LeafBox[]; di
     const axisLen = split.dir === 'v' ? w : h;
     const t = Math.max(0, split.t);
     const avail = Math.max(10, axisLen - t * (n - 1));
-    const sum = split.children.reduce((s, c) => s + Math.max(0, c.size), 0) || 1;
-    const scale = avail / sum;
+    const sum = split.children.reduce((s, c) => s + Math.max(0, c.size), 0);
+    // АБСОЛЮТНАЯ раскладка: каждый ребёнок рисуется строго своим размером,
+    // расхождение (drift) отдаётся последнему. Соседние ряды не пересчитываются.
+    const drift = avail - sum;
     let cursor = split.dir === 'v' ? x : y;
     split.children.forEach((child, i) => {
-      const len = Math.max(0, child.size) * scale;
+      let len = Math.max(0, child.size);
+      if (i === n - 1) len = Math.max(1, len + drift);
       if (split.dir === 'v') {
         place(child.node, cursor, y, len, h, [...path, i]);
         if (i < n - 1) {
           dividers.push({
             path, after: i, dir: 'v',
             x: cursor + len, y, w: t, h,
-            scale, pairLen: 0,
           });
         }
         cursor += len + t;
@@ -156,26 +182,15 @@ export function layoutModule(p: Project, m: WardModule): { leaves: LeafBox[]; di
           dividers.push({
             path, after: i, dir: 'h',
             x, y: cursor + len, w, h: t,
-            scale, pairLen: 0,
           });
         }
         cursor += len + t;
       }
     });
-    // pairLen для соседей (чтобы тяга границы не трогала остальных)
-    for (const d of dividers.filter((d) => samePathArr(d.path, path))) {
-      const a = split.children[d.after];
-      const b = split.children[d.after + 1];
-      if (a && b) d.pairLen = (Math.max(0, a.size) + Math.max(0, b.size)) * scale + t;
-    }
   };
 
   place(m.root, box.x, box.y, box.w, box.h, []);
   return { leaves, dividers };
-}
-
-function samePathArr(a: Path, b: Path): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /** Найти лист в точке (xLocal — от начала стены, yFloor — от пола). */
@@ -194,35 +209,58 @@ export function leafAtPoint(
 }
 
 /**
- * Кандидаты привязки для тяги разделителя dir в модуле m:
- * центры всех остальных разделителей того же направления (для h — y от пола,
- * для v — x вдоль стены), в тех же координатах, что pos в dragDivider.
+ * Кандидаты привязки для тяги разделителя dir на стене wall.
+ * Координата в той же системе, что pos в dragDivider:
+ *   для h — высота от пола (y), для v — x вдоль стены.
+ *
+ * Собираются ПО ВСЕЙ СТЕНЕ, чтобы полки/перегородки соседних модулей
+ * выравнивались друг с другом:
+ *   - все перегородки того же направления во всех модулях стены
+ *     (кроме перетаскиваемой — exclude);
+ *   - для h дополнительно — линии полок внутри открытых ниш
+ *     («уже установленные горизонтальные полки»).
  */
 export function dividerSnapCandidates(
   p: Project,
-  m: WardModule,
+  wall: WallId,
   dir: 'v' | 'h',
-  excludePath: Path,
-  excludeAfter: number,
+  exclude?: { moduleId: string; path: Path; after: number },
 ): number[] {
-  const { dividers } = layoutModule(p, m);
   const out: number[] = [];
-  for (const d of dividers) {
-    if (d.dir !== dir) continue;
-    if (
-      d.after === excludeAfter &&
-      d.path.length === excludePath.length &&
-      d.path.every((v, i) => v === excludePath[i])
-    )
-      continue;
-    out.push(dir === 'v' ? d.x + d.w / 2 : d.y + d.h / 2);
+  for (const m of modulesOn(p, wall)) {
+    const { leaves, dividers } = layoutModule(p, m);
+    for (const d of dividers) {
+      if (d.dir !== dir) continue;
+      if (
+        exclude &&
+        m.id === exclude.moduleId &&
+        d.after === exclude.after &&
+        d.path.length === exclude.path.length &&
+        d.path.every((v, i) => v === exclude.path[i])
+      )
+        continue;
+      out.push(dir === 'v' ? d.x + d.w / 2 : d.y + d.h / 2);
+    }
+    if (dir === 'h') {
+      for (const lb of leaves) {
+        if (lb.leaf.face.kind !== 'open') continue;
+        const f = lb.leaf.face;
+        for (const sy of shelfYsIn(lb.y, lb.h, f.shelves, f.shelfPitch)) out.push(sy);
+      }
+    }
   }
   return out;
 }
 
-/** Допуск привязки, мм: не меньше шага сетки, но и не слишком грубый. */
-export function snapTolerance(p: Project): number {
-  return clamp(p.grid > 0 ? p.grid / 2 : 25, 10, 40);
+/**
+ * Допуск привязки, мм. Магнит должен ловиться мышью на ЭКРАНЕ: если передан
+ * текущий zoom (px на мм), допуск = max(grid/2, ~8 px в мм). На общем плане
+ * это десятки мм, при сильном приближении — grid/2.
+ */
+export function snapTolerance(p: Project, zoom?: number): number {
+  const gridTol = p.grid > 0 ? p.grid / 2 : 25;
+  const pxTol = zoom && zoom > 0 ? 8 / zoom : 0;
+  return clamp(Math.max(gridTol, pxTol), 10, 400);
 }
 
 /** Высоты полок внутри листа (от пола). */
@@ -312,8 +350,128 @@ export function nodeBoxes(
   }
   for (const d of dividers) {
     for (let i = 1; i <= d.path.length; i++) add(d.path.slice(0, i).join('.'), d.x, d.y, d.w, d.h);
-    // перегородки принадлежат и сплиту-владельцу (d.path), учтём его целиком
     add(d.path.join('.'), d.x, d.y, d.w, d.h);
   }
   return boxes;
+}
+
+// ------------------------------------------------------------------ нормализация и общие стенки
+
+/**
+ * ПРОПОРЦИОНАЛЬНО пересчитать размеры дерева под новые габариты нутра.
+ * Применяется только когда меняется весь контейнер: ресайз модуля, смена
+ * высоты/ширины в свойствах, поворот нарезки, миграция.
+ * Локальные правки (тяга перегородки, толщина, общие стенки, удаление узла)
+ * используют fitTree — они не должны двигать нетронутые отсеки.
+ */
+export function normalizeTree(p: Project, m: WardModule): void {
+  const ib = interiorBox(p, m);
+  const walk = (node: BoxNode, w: number, h: number) => {
+    if (node.type !== 'split') return;
+    const n = node.children.length;
+    if (!n) return;
+    const axisLen = node.dir === 'v' ? w : h;
+    const t = Math.max(0, node.t);
+    const avail = Math.max(1, axisLen - t * (n - 1));
+    const sum = node.children.reduce((s, c) => s + Math.max(0, c.size), 0);
+    const scale = sum > 0 ? avail / sum : 1;
+    for (const c of node.children) c.size = Math.max(1, c.size * scale);
+    for (const c of node.children) {
+      const cw = node.dir === 'v' ? c.size : w;
+      const ch = node.dir === 'v' ? h : c.size;
+      walk(c.node, cw, ch);
+    }
+  };
+  walk(m.root, ib.w, ib.h);
+}
+
+/**
+ * Абсолютная подгонка дерева под нутро модуля: размеры детей сохраняются,
+ * разница (drift) отдаётся ПОСЛЕДНЕМУ ребёнку каждого сплита. Используется
+ * после локальных изменений (толщина перегородки, общие стенки, удаление
+ * узла, новый разрез) — нетронутые отсеки не двигаются.
+ * Пропорциональный normalizeTree — только при ресайзе контейнера целиком.
+ */
+export function fitTree(p: Project, m: WardModule): void {
+  const ib = interiorBox(p, m);
+  const walk = (node: BoxNode, w: number, h: number): void => {
+    if (node.type !== 'split') return;
+    const n = node.children.length;
+    if (!n) return;
+    const axisLen = node.dir === 'v' ? w : h;
+    const t = Math.max(0, node.t);
+    const avail = Math.max(1, axisLen - t * (n - 1));
+    const sum = node.children.reduce((s, c) => s + Math.max(0, c.size), 0);
+    let drift = avail - sum;
+    for (let i = n - 1; i >= 0 && Math.abs(drift) > 1e-6; i--) {
+      const c = node.children[i];
+      const cur = Math.max(0, c.size);
+      const want = Math.max(1, cur + drift);
+      drift -= want - cur;
+      c.size = want;
+    }
+    for (const c of node.children) {
+      walk(c.node, node.dir === 'v' ? c.size : w, node.dir === 'v' ? h : c.size);
+    }
+  };
+  walk(m.root, ib.w, ib.h);
+}
+
+/** Пары модулей, стоящих вплотную (стык = потенциально общая стенка). */
+export function flushPairs(p: Project): Set<string> {
+  const s = new Set<string>();
+  for (const wall of WALLS) {
+    const ms = modulesOn(p, wall);
+    for (let i = 0; i < ms.length - 1; i++) {
+      if (Math.abs(wallEnd(ms[i]) - ms[i + 1].from) < 1) s.add(`${ms[i].id}|${ms[i + 1].id}`);
+    }
+  }
+  return s;
+}
+
+/**
+ * Применить умолчания общих стенок по изменению стыков:
+ * newPairs — пары, появившиеся после изменения (ставить shared=true),
+ * gonePairs — исчезнувшие (ставить shared=false). Уже существующие стыки
+ * не трогаем — там действует выбор пользователя.
+ * @returns id модулей, у которых изменились стенки (им подгоняем дерево через fitTree).
+ */
+export function applySharedTransitions(
+  p: Project,
+  newPairs: Iterable<string>,
+  gonePairs: Iterable<string>,
+): string[] {
+  const touched = new Set<string>();
+  const byId = new Map(p.modules.map((m) => [m.id, m]));
+  for (const pair of newPairs) {
+    const [la, rb] = pair.split('|');
+    const L = byId.get(la);
+    const R = byId.get(rb);
+    if (L && !L.rightShared) {
+      L.rightShared = true;
+      touched.add(L.id);
+    }
+    if (R && !R.leftShared) {
+      R.leftShared = true;
+      touched.add(R.id);
+    }
+  }
+  for (const pair of gonePairs) {
+    const [la, rb] = pair.split('|');
+    const L = byId.get(la);
+    const R = byId.get(rb);
+    if (L && L.rightShared) {
+      L.rightShared = false;
+      touched.add(L.id);
+    }
+    if (R && R.leftShared) {
+      R.leftShared = false;
+      touched.add(R.id);
+    }
+  }
+  for (const id of touched) {
+    const m = byId.get(id);
+    if (m) fitTree(p, m);
+  }
+  return [...touched];
 }

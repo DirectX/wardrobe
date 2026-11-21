@@ -3,10 +3,16 @@ import { renderAll, select, ui } from './state.ts';
 import { leaf, newModule } from './defaults.ts';
 import {
   CARCASS_T,
+  applySharedTransitions,
   clamp,
   cornerZones,
+  fitTree,
+  flushPairs,
+  interiorBox,
   layoutModule,
   modulesOn,
+  nodeBoxes,
+  normalizeTree,
   resolveAround,
   snap,
   wallEnd,
@@ -24,6 +30,22 @@ import { uid } from './types.ts';
 
 export const MIN_W = 200;
 export const MIN_LEAF = 80;
+
+// ------------------------------------------------------------------ общие стенки
+
+/**
+ * Применить умолчания общих стенок: сравнить стыки ПОСЛЕ изменения
+ * со снимком ДО. Новые стыки → shared=true, исчезнувшие → shared=false.
+ * Существующие стыки не трогаем — там действует выбор пользователя.
+ */
+function syncSharedFrom(p: Project, before: Set<string>): void {
+  const after = flushPairs(p);
+  const added: string[] = [];
+  const gone: string[] = [];
+  for (const pair of after) if (!before.has(pair)) added.push(pair);
+  for (const pair of before) if (!after.has(pair)) gone.push(pair);
+  applySharedTransitions(p, added, gone);
+}
 
 // ------------------------------------------------------------------ модули
 
@@ -48,18 +70,22 @@ export function addModule(wall: WallId): void {
     ui.message =
       z.start + z.end > 0
         ? 'Углы заняты глубиной смежного ряда — на стене не осталось места'
-        : 'На стене нет места — удлинитe стену или уберите лишние модули';
+        : 'На стене нет места — удлините стену или уберите лишние модули';
     renderAll();
     return;
   }
   const from = firstFreeFrom(p, wall, w);
   if (from < 0) {
-    ui.message = 'На стене нет места — удлинитe стену или уберите лишние модули';
+    ui.message = 'На стене нет места — удлините стену или уберите лишние модули';
     renderAll();
     return;
   }
   const m = newModule(wall, from, w, p);
-  store.update((pp) => pp.modules.push(m));
+  const before = flushPairs(p);
+  store.update((pp) => {
+    pp.modules.push(m);
+    syncSharedFrom(pp, before);
+  });
   select({ kind: 'module', id: m.id }, []);
 }
 
@@ -84,6 +110,7 @@ export function insertModuleAtPointer(wall: WallId, xMm: number): void {
     renderAll();
     return;
   }
+  syncSharedFrom(draft, flushPairs(p));
   store.replace(draft);
   select({ kind: 'module', id: proto.id }, []);
 }
@@ -100,11 +127,16 @@ export function moveModule(id: string, newFrom: number): void {
     draft.walls[m.wall].length - z.end - m.w,
   );
   if (!resolveAround(draft, m.wall, m)) return;
+  syncSharedFrom(draft, flushPairs(p));
   store.update((pp) => {
     pp.modules = draft.modules;
   }, false);
 }
 
+/**
+ * Ресайз контейнера: габарит меняется, внутренние размеры пересчитываются
+ * ПРОПОРЦИОНАЛЬНО (единственный случай, когда это нужно).
+ */
 export function resizeModule(id: string, edge: 'l' | 'r', pos: number): void {
   const p = store.project;
   const draft = structuredClone(p);
@@ -121,18 +153,44 @@ export function resizeModule(id: string, edge: 'l' | 'r', pos: number): void {
     m.w = end - m.from;
   }
   if (!resolveAround(draft, m.wall, m)) return;
+  normalizeTree(draft, m);
+  syncSharedFrom(draft, flushPairs(p));
   store.update((pp) => {
     pp.modules = draft.modules;
   }, false);
 }
 
+/** Смена габарита из панели свойств: с пропорциональной нормализацией дерева. */
+export function setModuleBox(id: string, patch: Partial<WardModule>): void {
+  const p = store.project;
+  store.update((pp) => {
+    const m = pp.modules.find((x) => x.id === id);
+    if (!m) return;
+    Object.assign(m, patch);
+    normalizeTree(pp, m);
+  });
+}
+
+/** Переключить общую стенку вручную. */
+export function setSharedWall(id: string, side: 'l' | 'r', shared: boolean): void {
+  store.update((pp) => {
+    const m = pp.modules.find((x) => x.id === id);
+    if (!m) return;
+    if (side === 'l') m.leftShared = shared;
+    else m.rightShared = shared;
+    fitTree(pp, m);
+  });
+}
+
 export function deleteSelected(): void {
   const sel = ui.sel;
   if (!sel) return;
+  const before = flushPairs(store.project);
   store.update((p) => {
     if (sel.kind === 'module') p.modules = p.modules.filter((m) => m.id !== sel.id);
     if (sel.kind === 'socket') p.sockets = p.sockets.filter((s) => s.id !== sel.id);
     if (sel.kind === 'tv') p.tv = null;
+    syncSharedFrom(p, before);
   });
   select(null);
 }
@@ -155,6 +213,7 @@ export function duplicateModule(id: string): void {
       return;
     }
   }
+  syncSharedFrom(draft, flushPairs(p));
   store.replace(draft);
   select({ kind: 'module', id: copy.id }, []);
 }
@@ -168,23 +227,45 @@ function patchModule(id: string, fn: (m: WardModule) => void, commit = true): vo
   }, commit);
 }
 
-/** Разделить лист пополам: dir 'v' — вертикальным разделителем, 'h' — горизонтальной полкой-перегородкой. */
+/** Фактический размер узла (по раскладке), мм. */
+function nodeAxisSize(p: Project, m: WardModule, path: Path): { w: number; h: number } {
+  const b = nodeBoxes(p, m).get(path.join('.'));
+  if (b) return { w: b.w, h: b.h };
+  const ib = interiorBox(p, m);
+  return { w: ib.w, h: ib.h };
+}
+
+/**
+ * Разделить лист пополам абсолютными мм: dir 'v' — вертикальной перегородкой
+ * (две ячейки рядом), 'h' — горизонтальной (полка-перегородка, две ячейки друг над другом).
+ */
 export function splitLeaf(id: string, path: Path, dir: 'v' | 'h'): void {
-  patchModule(id, (m) => {
-    const node = resolveNode(m.root, path);
-    if (!node || node.type !== 'leaf') return;
-    const a = structuredClone(node);
-    const b = structuredClone(node);
+  const p = store.project;
+  const m = p.modules.find((x) => x.id === id);
+  if (!m) return;
+  const node = resolveNode(m.root, path);
+  if (!node || node.type !== 'leaf') return;
+  const { w, h } = nodeAxisSize(p, m, path);
+  const t = CARCASS_T;
+  const axis = dir === 'v' ? w : h;
+  const half = Math.max(MIN_LEAF, (axis - t) / 2);
+  const other = Math.max(MIN_LEAF, axis - t - half);
+  patchModule(id, (mm) => {
+    const n = resolveNode(mm.root, path);
+    if (!n || n.type !== 'leaf') return;
+    const a = structuredClone(n);
+    const b = structuredClone(n);
     a.id = uid('l');
-    m.root = replaceNode(m.root, path, {
+    mm.root = replaceNode(mm.root, path, {
       type: 'split',
       dir,
-      t: CARCASS_T,
+      t,
       children: [
-        { size: 1, node: a },
-        { size: 1, node: b },
+        { size: half, node: a },
+        { size: other, node: b },
       ],
     });
+    fitTree(p, mm);
   });
   select({ kind: 'module', id }, [...path, 1]);
 }
@@ -194,19 +275,29 @@ export function removeNode(id: string, path: Path): void {
   if (path.length === 0) return;
   patchModule(id, (m) => {
     m.root = dropLeaf(m.root, path);
+    fitTree(store.project, m);
   });
   select({ kind: 'module', id }, path.slice(0, -1));
 }
 
 function dropLeaf(root: BoxNode, path: Path): BoxNode {
   if (path.length === 1) {
+    if (root.type !== 'split') return root;
     const parent = root;
-    if (parent.type !== 'split') return root;
     const i = path[0];
-    const neighbors = parent.children.filter((_, j) => j !== i);
-    if (parent.children.length === 1) return root;
-    if (parent.children.length === 2) return neighbors[0].node;
+    if (parent.children.length <= 1) return root;
+    const gone = parent.children[i];
+    const t = parent.t;
+    if (parent.children.length === 2) {
+      const keep = parent.children[i === 0 ? 1 : 0];
+      // освободившийся размер + перегородка уходят оставшемуся ребёнку
+      keep.size = parent.dir === 'v' ? keep.size + gone.size + t : keep.size + gone.size + t;
+      return keep.node;
+    }
     parent.children.splice(i, 1);
+    // сосед рядом с удалённым получает его размер и перегородку
+    const nb = parent.children[Math.min(i, parent.children.length - 1)];
+    if (nb) nb.size += gone.size + t;
     return root;
   }
   if (root.type !== 'split') return root;
@@ -230,7 +321,10 @@ export function setDividerT(id: string, path: Path, t: number): void {
   patchModule(id, (m) => {
     const parentPath = path.slice(0, -1);
     const node = resolveNode(m.root, parentPath);
-    if (node?.type === 'split') node.t = clamp(Math.round(t), 0, 60);
+    if (node?.type === 'split') {
+      node.t = clamp(Math.round(t), 0, 60);
+      fitTree(store.project, m);
+    }
   });
 }
 
@@ -238,15 +332,25 @@ export function setDividerT(id: string, path: Path, t: number): void {
 export function setSplitT(id: string, path: Path, t: number): void {
   patchModule(id, (m) => {
     const node = resolveNode(m.root, path);
-    if (node?.type === 'split') node.t = clamp(Math.round(t), 0, 60);
+    if (node?.type === 'split') {
+      node.t = clamp(Math.round(t), 0, 60);
+      fitTree(store.project, m);
+    }
   });
 }
 
-/** Повернуть нарезку секции: вертикальная ↔ горизонтальная (размеры относительные). */
+/**
+ * Повернуть нарезку секции: v ↔ h.
+ * Абсолютные размеры вдоль старой оси становятся размерами вдоль новой,
+ * затем нормализуем под фактический бокс.
+ */
 export function setSplitDir(id: string, path: Path): void {
+  const p = store.project;
   patchModule(id, (m) => {
     const node = resolveNode(m.root, path);
-    if (node?.type === 'split') node.dir = node.dir === 'v' ? 'h' : 'v';
+    if (!node || node.type !== 'split') return;
+    node.dir = node.dir === 'v' ? 'h' : 'v';
+    normalizeTree(p, m);
   });
 }
 
@@ -293,7 +397,10 @@ export interface DividerSnap {
 /**
  * Тяга разделителя: pos — координата в системе стены
  * (x вдоль стены для v, y от пола для h), трактуется как центр перегородки.
- * snap — привязка к ранее установленным перегородкам (например, горизонтальным полкам).
+ *
+ * Меняются ТОЛЬКО два смежных ребёнка (их абсолютные размеры), остальные
+ * перегородки группы остаются на месте. Ограничение — позиции соседних
+ * перегородок: не выйти за пределы пары и не сделать проём меньше MIN_LEAF.
  */
 export function dragDivider(
   id: string,
@@ -311,15 +418,15 @@ export function dragDivider(
   );
   if (!d) return;
   const split = resolveNode(m.root, splitPath);
-  if (!split || split.type !== 'split') return;
+  if (split?.type !== 'split') return;
   const a = split.children[after];
   const b = split.children[after + 1];
   if (!a || !b) return;
-  const curLeftScaled = a.size * d.scale;
-  // начало левого/нижнего ребёнка (d.x/d.y — это уже край после него)
-  const childStart = (d.dir === 'v' ? d.x : d.y) - curLeftScaled;
-  // толщина перегородки вдоль оси тяги: v → d.w, h → d.h
+
+  // начало левого/нижнего ребёнка: левый край перегородки минус его размер
   const thickness = d.dir === 'v' ? d.w : d.h;
+  const childStart = (d.dir === 'v' ? d.x : d.y) - a.size;
+
   let effective = pos;
   if (snap && snap.tol > 0 && snap.candidates.length) {
     let best: number | null = null;
@@ -333,22 +440,23 @@ export function dragDivider(
     }
     if (best !== null && bestDist <= snap.tol) effective = best;
   }
-  const target = effective - childStart - thickness / 2; // желаемый размер левого/нижнего ребёнка
-  const minScaled = MIN_LEAF;
-  const maxTarget = d.pairLen - thickness - minScaled;
-  const clamped = clamp(target, minScaled, Math.max(minScaled, maxTarget));
-  const shift = clamped - curLeftScaled;
+
+  // желаемый размер левого/нижнего ребёнка в мм
+  const target = effective - childStart - thickness / 2;
+  const pairLen = a.size + b.size; // сумма пары постоянна
+  const nA = Math.round(clamp(target, MIN_LEAF, pairLen - MIN_LEAF));
+  const nB = pairLen - nA;
+  if (nA === Math.round(a.size) && nB === Math.round(b.size)) return;
+  if (nB < MIN_LEAF) return;
+
   store.update((pp) => {
     const mm = pp.modules.find((x) => x.id === id);
     if (!mm) return;
     const node = resolveNode(mm.root, splitPath);
-    if (!node || node.type !== 'split') return;
+    if (node?.type !== 'split') return;
     const aa = node.children[after];
     const bb = node.children[after + 1];
     if (!aa || !bb) return;
-    const nA = Math.max(MIN_LEAF / d.scale, aa.size + shift / d.scale);
-    const nB = bb.size - (nA - aa.size);
-    if (nB < MIN_LEAF / d.scale) return;
     aa.size = nA;
     bb.size = nB;
   }, false);
@@ -436,25 +544,24 @@ export function makeNicheUnderTv(): void {
     if (m.from < lo && lo - m.from >= MIN_W) {
       const left = structuredClone(m);
       left.w = lo - m.from;
+      normalizeTree(draft, left);
       rebuilt.push(left);
     }
     if (wallEnd(m) > hi && wallEnd(m) - hi >= MIN_W) {
       const right = structuredClone(m);
       right.from = hi;
-      right.w = wallEnd(right) - hi;
+      right.w = wallEnd(m) - hi;
+      normalizeTree(draft, right);
       rebuilt.push(right);
     }
   }
   const niche: WardModule = {
-    id: uid('m'),
-    wall: t.wall,
-    from: lo,
-    w: hi - lo,
-    h: p.ceiling,
+    ...newModule(t.wall, lo, hi - lo, draft),
     depth: 450,
     root: leaf({ kind: 'open', shelves: 0 }),
   };
   draft.modules = [...others, ...rebuilt, niche];
+  syncSharedFrom(draft, flushPairs(p));
   store.replace(draft);
   select({ kind: 'module', id: niche.id }, []);
 }

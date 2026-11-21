@@ -12,6 +12,7 @@ import {
   removeNode,
   setFace,
   setFaceGroup,
+  setSharedWall,
   splitLeaf,
   toggleFace,
 } from './edit.ts';
@@ -20,14 +21,20 @@ import {
   cornerZones,
   countLeaves,
   dividerSnapCandidates,
+  interiorBox,
   layoutModule,
   modulesOn,
+  normalizeTree,
   shelfYsIn,
   snapTolerance,
+  wallEnd,
   wallStart,
 } from './geometry.ts';
 import { validate } from './validate.ts';
 import { migrate } from './migrate.ts';
+import { buildBom } from './bom.ts';
+import { leaf } from './defaults.ts';
+import { buildReportHtml, moduleDimRefs } from './print.ts';
 import { renderFacade } from './views/facade.ts';
 import { renderLibrary, renderProps } from './panels.ts';
 import type { LeafFace, Path, Project } from './types.ts';
@@ -128,24 +135,25 @@ export function runAutoTest(): void {
     );
   }
 
-  // 6. drag разделителя v: сумма пары постоянна
+  // 6. drag разделителя v: сумма пары постоянна, соседние перегородки не едут
   {
     const m = mod(box1.id);
+    const rootSplit = m.root as { type: 'split'; children: { size: number }[] };
+    const pairBefore = rootSplit.children[0].size + rootSplit.children[1].size;
     const before = layoutModule(store.project, m);
     const d = before.dividers.find((x) => x.dir === 'v' && x.path.length === 0)!;
-    const pairBefore = d.pairLen;
     const pos = d.x + d.w / 2 + 100; // сдвигаем вправо на 100
     dragDivider(box1.id, [], 0, pos);
     const after = layoutModule(store.project, mod(box1.id));
     const d2 = after.dividers.find((x) => x.dir === 'v' && x.path.length === 0)!;
-    check('dragDivider: пара постоянна', Math.abs(d2.pairLen - pairBefore) < 1.5);
+    const rootSplit2 = mod(box1.id).root as { type: 'split'; children: { size: number }[] };
+    const pairAfter = rootSplit2.children[0].size + rootSplit2.children[1].size;
+    check('dragDivider: сумма пары постоянна', Math.abs(pairAfter - pairBefore) < 1.5);
     check('dragDivider: сдвинулся', Math.abs(d2.x - d.x - 100) < 2);
     // в угол пары — не впускает ниже минимума
     dragDivider(box1.id, [], 0, d2.x + d2.w / 2 - 10_000);
-    const d3 = layoutModule(store.project, mod(box1.id)).dividers.find((x) => x.dir === 'v' && x.path.length === 0)!;
     const leftLeaf = layoutModule(store.project, mod(box1.id)).leaves.find((l) => l.path.join('.') === '0')!;
     check('dragDivider: минимальный лист соблюдён', leftLeaf.w >= 79);
-    void d3;
   }
 
   // 7. removeLeaf схлопывает сплит
@@ -284,7 +292,7 @@ export function runAutoTest(): void {
       sockets: [],
     };
     const p3 = migrate(structuredClone(v2));
-    check('migrate: v2 распознан', !!p3 && p3.version === 3);
+    check('migrate: v2 распознан', !!p3 && p3.version === 4);
     const a = p3?.modules.find((m) => m.id === 'm-a');
     const b = p3?.modules.find((m) => m.id === 'm-b');
     check('migrate: 2 секции → split v с дверцей и нишей', !!a && a.root.type === 'split' && (() => {
@@ -292,7 +300,7 @@ export function runAutoTest(): void {
       return f.length === 2 && f[0].kind === 'door' && f[1].kind === 'open';
     })());
     check('migrate: ящики → лист drawers', !!b && b.root.type === 'leaf' && (b.root as { face: LeafFace }).face.kind === 'drawers');
-    check('migrate: идемпотентна', !!p3 && migrate(structuredClone(p3))?.version === 3);
+    check('migrate: идемпотентна', !!p3 && migrate(structuredClone(p3))?.version === 4);
   }
 
   // 13. геометрия рендера: лист лежит внутри корпуса (с зеркалом левой стены)
@@ -413,10 +421,16 @@ export function runAutoTest(): void {
     const p = store.project;
     const m = mod(bm.id);
 
-    const candsH = dividerSnapCandidates(p, m, 'h', [0], 0);
+    const candsH = dividerSnapCandidates(p, 'center', 'h', { moduleId: bm.id, path: [0], after: 0 });
     check('snap: кандидаты h найдены (вторая полка)', candsH.length === 1);
     const tol = snapTolerance(p);
     check(`snap: допуск разумный (${tol})`, tol >= 10 && tol <= 40);
+    // зум-зависимый допуск: на мелком масштабе магнит ловится мышью (~8 px)
+    const tolZoomed = snapTolerance(p, 0.128);
+    check(
+      `snap: допуск при зуме 0.128 ≈ 8px (${tolZoomed.toFixed(0)} мм)`,
+      Math.abs(tolZoomed * 0.128 - 8) < 1.5,
+    );
 
     // тянем первую h-перегородку к позиции второй (не точно — в пределах допуска)
     const d1 = layoutModule(p, m).dividers.find((d) => d.dir === 'h' && d.path.length === 1 && d.path[0] === 0)!;
@@ -450,6 +464,53 @@ export function runAutoTest(): void {
       (b) => b.textContent?.includes('Ниша') || (b as HTMLSelectElement).value === 'open',
     );
     check('панель: нарезка слева', !!ctx && hasSplit && !hasFaceLeft);
+
+    // 15b. кандидаты со ВСЕЙ стены: перегородка соседнего модуля + полки ниши
+    {
+      store.update((pp) => {
+        pp.walls.center.length = 3000;
+        pp.modules = [];
+      });
+      addModule('center');
+      const mA = modulesOn(store.project, 'center')[0];
+      splitLeaf(mA.id, [], 'h'); // одна h-перегородка в модуле A
+      // модуль B вплотную, с нишей на 2 полки (позиции не совпадают с A)
+      addModule('center');
+      const mB = modulesOn(store.project, 'center').filter((x) => x.id !== mA.id)[0];
+      setFace(mB.id, [], { kind: 'open', shelves: 2 });
+      const candsWall = dividerSnapCandidates(store.project, 'center', 'h', {
+        moduleId: mA.id,
+        path: [],
+        after: 0,
+      });
+      // перетаскиваемая перегородка A (path [], after 0) должна быть ИСКЛЮЧЕНА
+      const draggedA = layoutModule(store.project, mod(mA.id)).dividers.find(
+        (d) => d.dir === 'h' && d.path.length === 0 && d.after === 0,
+      )!;
+      const shelvesB = layoutModule(store.project, mod(mB.id)).leaves
+        .filter((l) => l.leaf.face.kind === 'open')
+        .flatMap((l) => shelfYsIn(l.y, l.h, (l.leaf.face as { shelves: number }).shelves, null));
+      check(
+        'snap: кандидаты — полки ниши соседнего модуля B',
+        shelvesB.length >= 1 &&
+          shelvesB.every((sy) => candsWall.some((c) => Math.abs(c - sy) < 0.5)),
+      );
+      check(
+        'snap: перетаскиваемая перегородка A исключена из кандидатов',
+        !candsWall.some((c) => Math.abs(c - (draggedA.y + draggedA.h / 2)) < 0.5),
+      );
+      // тянем перегородку A к полке ниши B — магнитится через всю стену
+      const target = shelvesB[0] ?? 1500;
+      dragDivider(mA.id, [], 0, target + 5, {
+        candidates: candsWall,
+        tol: snapTolerance(store.project, 0.128),
+      });
+      const dA = layoutModule(store.project, mod(mA.id)).dividers.find((d) => d.dir === 'h')!;
+      check(
+        'snap: перегородка A притянута к полке B',
+        Math.abs(dA.y + dA.h / 2 - target) < 0.6,
+      );
+    }
     check('панель: лицо отсека в свойствах справа', hasFaceProps);
     select(null);
     store.update((pp) => (pp.walls.center.length = Lc));
@@ -524,6 +585,279 @@ export function runAutoTest(): void {
       })();
       check('split: режется выбранная ячейка, а не контейнер', countLeaves(m.root) === before + 1 && rightUntouched);
       check('split: выбор перешёл на новую ячейку', pathEq(ui.path, [0, 1]));
+    }
+  }
+
+  // 17. тяга одной перегородки НЕ двигает соседние (абсолютные мм).
+  // Сценарий пользователя: ОДИН плоский сплит из 3+ детей (группа полок).
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    // горизонтальная нарезка: 0 -> [0,1] -> [0,1,2] — плоский сплит из 3 детей, 2 полки
+    splitLeaf(bm.id, [], 'h');
+    splitLeaf(bm.id, [1], 'h');
+    // корень должен схлопнуться в один h-сплит из 3 детей? нет: [0] и [1]=split.
+    // Для плоского сплита соберём дерево напрямую:
+    store.update((pp) => {
+      const m = pp.modules.find((x) => x.id === bm.id)!;
+      m.root = {
+        type: 'split',
+        dir: 'h',
+        t: 18,
+        children: [
+          { size: 600, node: leaf({ kind: 'open', shelves: 0 }) },
+          { size: 600, node: leaf({ kind: 'open', shelves: 0 }) },
+          { size: 600, node: leaf({ kind: 'open', shelves: 0 }) },
+        ],
+      };
+      normalizeTree(pp, m); // размеры в мм должны соответствовать нутру
+    });
+    let m = mod(bm.id);
+    const divs = () =>
+      layoutModule(store.project, mod(bm.id)).dividers
+        .filter((d) => d.dir === 'h')
+        .sort((a, b) => a.y - b.y);
+    let ds = divs();
+    check('abs: плоский сплит имеет 2 перегородки', ds.length === 2);
+    const y1Before = ds[1].y;
+    // тянем НИЖНЮЮ перегородку вниз — верхняя обязана стоять на месте
+    dragDivider(bm.id, [], 0, ds[0].y + ds[0].h / 2 - 150);
+    ds = divs();
+    check('abs: тяга нижней полки не двигает верхнюю', Math.abs(ds[1].y - y1Before) < 0.51);
+    m = mod(bm.id);
+    const root = m.root as { children: { size: number }[] };
+    const sumAfter = root.children.reduce((s, c) => s + c.size, 0);
+    check('abs: сумма размеров детей = нутро (без дрейфа)', Math.abs(sumAfter - (m.h - store.project.base - 36 - 2 * 18)) < 1.5);
+    // тянем ВЕРХНЮЮ перегородку — нижняя стоит
+    const y0Before = ds[0].y;
+    dragDivider(bm.id, [], 1, ds[1].y + ds[1].h / 2 + 120);
+    ds = divs();
+    check('abs: тяга верхней полки не двигает нижнюю', Math.abs(ds[0].y - y0Before) < 0.51);
+    // вертикальный сплит из 3 детей — то же по x
+    store.update((pp) => {
+      const mm = pp.modules.find((x) => x.id === bm.id)!;
+      mm.root = {
+        type: 'split',
+        dir: 'v',
+        t: 18,
+        children: [
+          { size: 150, node: leaf({ kind: 'open', shelves: 0 }) },
+          { size: 150, node: leaf({ kind: 'open', shelves: 0 }) },
+          { size: 150, node: leaf({ kind: 'open', shelves: 0 }) },
+        ],
+      };
+      normalizeTree(pp, mm);
+    });
+    const vdivs = () =>
+      layoutModule(store.project, mod(bm.id)).dividers
+        .filter((d) => d.dir === 'v')
+        .sort((a, b) => a.x - b.x);
+    let vs = vdivs();
+    const vx1Before = vs[1].x;
+    dragDivider(bm.id, [], 0, vs[0].x + vs[0].w / 2 - 40);
+    vs = vdivs();
+    check('abs: вертикальная тяга не двигает соседнюю', Math.abs(vs[1].x - vx1Before) < 0.51);
+  }
+
+  // 17b. ВЛОЖЕННАЯ нарезка: тяга внутренней перегородки не пересчитывает
+  //     остальные проёмы того же ряда (регрессия пропорционального scale)
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    // корень: 2 колонки; левая колонка: 3 полки (вложенный h-сплит)
+    store.update((pp) => {
+      const m = pp.modules.find((x) => x.id === bm.id)!;
+      const ib = interiorBox(pp, m);
+      const colW = (ib.w - 18) / 2;
+      m.root = {
+        type: 'split',
+        dir: 'v',
+        t: 18,
+        children: [
+          {
+            size: colW,
+            node: {
+              type: 'split',
+              dir: 'h',
+              t: 18,
+              children: [
+                { size: 600, node: leaf({ kind: 'open', shelves: 0 }) },
+                { size: 600, node: leaf({ kind: 'open', shelves: 0 }) },
+                { size: ib.h - 1200 - 36, node: leaf({ kind: 'open', shelves: 0 }) },
+              ],
+            },
+          },
+          { size: colW, node: leaf({ kind: 'open', shelves: 0 }) },
+        ],
+      };
+    });
+
+    const innerH = () =>
+      layoutModule(store.project, mod(bm.id)).dividers
+        .filter((d) => d.dir === 'h' && d.path.length === 1 && d.path[0] === 0)
+        .sort((a, b) => a.y - b.y);
+    const rightLeaf = () =>
+      layoutModule(store.project, mod(bm.id)).leaves.find((l) => l.path.join('.') === '1')!;
+
+    // тянем НИЖНЮЮ полку левой колонки — верхняя не едет, третий проём
+    // начинается там же (его нижняя граница — дно короба — тоже неподвижна)
+    let ds = innerH();
+    const top0 = ds[1].y;
+    const third0 = layoutModule(store.project, mod(bm.id)).leaves
+      .filter((l) => l.path.length === 2 && l.path[0] === 0)
+      .sort((a, b) => a.y - b.y)[2];
+    const thirdStart0 = third0.y + third0.h; // верх третьего проёма = низ второго
+    const right0 = rightLeaf();
+    dragDivider(bm.id, [0], 0, ds[0].y + ds[0].h / 2 - 120);
+    ds = innerH();
+    check('nested: верхняя полка ряда не пересчитана', Math.abs(ds[1].y - top0) < 0.51);
+    const right1 = rightLeaf();
+    check(
+      'nested: правая колонка не пострадала',
+      Math.abs(right1.x - right0.x) < 0.51 && Math.abs(right1.h - right0.h) < 0.51,
+    );
+    // первый проём вырос на 120, второй сжался на 120, третий не изменился
+    const third1 = layoutModule(store.project, mod(bm.id)).leaves
+      .filter((l) => l.path.length === 2 && l.path[0] === 0)
+      .sort((a, b) => a.y - b.y)[2];
+    check(
+      'nested: третий проём сохранил высоту и позицию',
+      Math.abs(third1.h - third0.h) < 0.51 && Math.abs(third1.y + third1.h - thirdStart0) < 0.51,
+    );
+
+    // тяга ВНЕШНЕЙ перегородки: внутренний ряд левой колонки не масштабируется
+    const innerBefore = innerH().map((d) => d.y);
+    const sizesBefore = ((mod(bm.id).root as { children: { node: { children?: { size: number }[] } }[] })
+      .children[0].node.children ?? []).map((c) => c.size);
+    const outer = layoutModule(store.project, mod(bm.id)).dividers.find((d) => d.dir === 'v')!;
+    dragDivider(bm.id, [], 0, outer.x + outer.w / 2 + 200);
+    const sizesAfter = ((mod(bm.id).root as { children: { node: { children?: { size: number }[] } }[] })
+      .children[0].node.children ?? []).map((c) => c.size);
+    check(
+      'nested: внешняя тяга не меняет внутренние размеры',
+      JSON.stringify(sizesBefore) === JSON.stringify(sizesAfter),
+    );
+    const innerAfter = innerH().map((d) => d.y);
+    check(
+      'nested: позиции внутренних полок не пересчитаны',
+      JSON.stringify(innerBefore.map(Math.round)) === JSON.stringify(innerAfter.map(Math.round)),
+    );
+  }
+
+  // 18. общие стенки: авто-включение вплотную, interior, ручное отключение, авто-снятие
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+    });
+    addModule('center');
+    const a = modulesOn(store.project, 'center')[0];
+    addModule('center'); // встаёт вплотную к a автоматически
+    const b = modulesOn(store.project, 'center').filter((x) => x.id !== a.id)[0];
+    check('shared: стык вплотную включил общие стенки', mod(a.id).rightShared && mod(b.id).leftShared);
+    const ibA = interiorBox(store.project, mod(a.id));
+    check('shared: interior = w - 18 - 9 (правая общая)', Math.abs(ibA.w - (mod(a.id).w - 18 - 9)) < 0.51);
+    setSharedWall(a.id, 'r', false);
+    const ibA2 = interiorBox(store.project, mod(a.id));
+    check('shared: ручное отключение → своя стенка 18', Math.abs(ibA2.w - (mod(a.id).w - 18 - 18)) < 0.51);
+    // разъехались — авто-отключение общих стенок
+    moveModule(b.id, b.from + 300);
+    check('shared: разъехались — общие стенки снялись', !mod(a.id).rightShared && !mod(b.id).leftShared);
+    // съехались обратно — авто-включение
+    moveModule(b.id, a.from + mod(a.id).w);
+    check('shared: снова вплотную — общие стенки вернулись', mod(a.id).rightShared && mod(b.id).leftShared);
+  }
+
+  // 19. BOM: горизонтальные перегородки на полную ширину, приоритет в сортировке
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    splitLeaf(bm.id, [], 'h');           // две секции горизонтально
+    splitLeaf(bm.id, [1], 'v');          // нижняя — две вертикально
+    setFace(bm.id, [0], { kind: 'door', hinge: 'left' });
+    const boms = buildBom(store.project);
+    const parts = boms[0].parts;
+    const m = mod(bm.id);
+    const innerW = m.w - 18 - 18; // одиночный модуль — стенки свои
+    const hDiv = parts.find((x) => x.cat === 'h-divider');
+    check('bom: горизонтальная перегородка найдена', !!hDiv);
+    check(
+      `bom: h-перегородка на полную ширину (${hDiv?.a} ≈ ${innerW})`,
+      !!hDiv && Math.abs(hDiv.a - innerW) < 1,
+    );
+    const vDiv = parts.find((x) => x.cat === 'v-divider');
+    check('bom: вертикальная перегородка есть', !!vDiv);
+    const firstCat = parts[0].cat;
+    check('bom: горизонтальные идут первыми (приоритет)', firstCat === 'h-divider');
+    const facade = parts.find((x) => x.cat === 'facade');
+    check('bom: фасад дверцы учтён', !!facade && facade.qty >= 1);
+    check('bom: корпус — 4 панели + цоколь', parts.filter((x) => x.cat === 'carcass').length === 4);
+  }
+
+  // 20. печатный отчёт: размеры от граней плит, не от середины
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+    });
+    addModule('center');
+    const ma = modulesOn(store.project, 'center')[0];
+    addModule('center'); // вплотную → общие стенки
+    const mb = modulesOn(store.project, 'center').filter((x) => x.id !== ma.id)[0];
+
+    // одиночный модуль: размеры = полный габарит, общей плиты нет
+    store.update((pp) => {
+      pp.modules = pp.modules.filter((x) => x.id === ma.id);
+    });
+    const solo = mod(ma.id);
+    const refsSolo = moduleDimRefs(store.project, solo);
+    check(
+      'print refs: одиночный модуль от своей грани до своей',
+      refsSolo.l === solo.from && refsSolo.r === solo.from + solo.w && refsSolo.sharedPanel === null,
+    );
+
+    // стык: левый модуль — до ГРАНИ общей плиты (from + w - 9), плита отдельно
+    const refsL = moduleDimRefs(store.project, solo);
+    store.update((pp) => pp.modules.push(mb));
+    moveModule(mb.id, wallEnd(solo));
+    const m2 = mod(ma.id);
+    const refsShared = moduleDimRefs(store.project, m2);
+    check(
+      'print refs: левый модуль стыка доводится до грани плиты (−9), не до середины',
+      refsShared.r === m2.from + m2.w - 9 && refsShared.sharedPanel === m2.from + m2.w,
+    );
+    const refsRight = moduleDimRefs(store.project, mod(mb.id));
+    check(
+      'print refs: правый модуль начинается от грани плиты (+9)',
+      refsRight.l === mod(mb.id).from + 9,
+    );
+    void refsL;
+
+    // нарезка, чтобы в спецификации была горизонтальная перегородка
+    splitLeaf(ma.id, [], 'h');
+    try {
+      const html = buildReportHtml(store.project);
+      check('print: отчёт содержит фасад, план и спецификацию',
+        html.includes('<svg') && html.includes('Спецификация раскроя') && html.includes('Перегородка горизонтальная'));
+      check('print: общая плита dimensioned отдельно', html.includes('18 (общая)'));
+      check('print: нет NaN/undefined', !html.includes('NaN') && !html.includes('undefined'));
+    } catch (e) {
+      check(`print: отчёт построен (${String(e)})`, false);
     }
   }
 
