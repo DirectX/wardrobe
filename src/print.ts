@@ -10,6 +10,7 @@ import {
   modulesOn,
   nodeBoxes,
   shelfYsIn,
+  slidingBoxes,
   wallEnd,
   wallStart,
   wallT,
@@ -53,10 +54,31 @@ interface DrawCtx {
   oy: number; // y пола на листе
 }
 
+/**
+ * Левая стена на фасаде зеркалится (угол с центральной — у правого края плиты),
+ * как в приложении: данные `from` отсчитываются от угла.
+ */
+export function isMirrorWall(wall: WallId): boolean {
+  return wall === 'left';
+}
+
+/** Точка данных вдоль стены (мм от её начала) → экранная координата отчёта. */
+export function elevDataX(
+  p: Project,
+  wall: WallId,
+  dataX: number,
+  ox: number,
+  starts: Record<WallId, number>,
+  scale: number,
+): number {
+  const L = p.walls[wall].length;
+  return ox + (starts[wall] + (isMirrorWall(wall) ? L - dataX : dataX)) * scale;
+}
+
 function drawFacade(ctx: DrawCtx): void {
   const { p, s, scale, ox, oy } = ctx;
   const starts = wallStart(p);
-  const X = (wall: WallId, dataX: number) => ox + (starts[wall] + dataX) * scale;
+  const X = (wall: WallId, dataX: number) => elevDataX(p, wall, dataX, ox, starts, scale);
   const Y = (yMm: number) => oy - yMm * scale;
 
   // пол
@@ -70,7 +92,7 @@ function drawFacade(ctx: DrawCtx): void {
       `<line x1="${X(wall, 0)}" y1="${Y(p.ceiling)}" x2="${X(wall, 0)}" y2="${Y(0)}" stroke="#bbb" stroke-width="1"/>`,
       `<text x="${X(wall, 0)}" y="${Y(p.ceiling) - 6}" font-size="10" fill="#444">${esc(WALL_LABEL[wall])} ${L}</text>`,
     );
-    // угловые зоны
+    // угловые зоны (у зеркальной стены start-зона — у правого края плиты)
     const z = cornerZones(p, wall);
     if (z.start > 0) dimH(ctx, X(wall, 0), Y(0) + 14, X(wall, z.start), Y(0) + 14, `${z.start}`);
     if (z.end > 0) dimH(ctx, X(wall, L - z.end), Y(0) + 14, X(wall, L), Y(0) + 14, `${z.end}`);
@@ -78,10 +100,12 @@ function drawFacade(ctx: DrawCtx): void {
     for (const m of modulesOn(p, wall)) drawModule(ctx, wall, m);
   }
 
-  // ТВ
+  // ТВ (у зеркальной стены левый кромочный край — это data-правый)
   if (p.tv) {
     const t = p.tv;
-    const x = X(t.wall, t.centerX - t.w / 2);
+    const x = isMirrorWall(t.wall)
+      ? X(t.wall, t.centerX + t.w / 2)
+      : X(t.wall, t.centerX - t.w / 2);
     const y = Y(t.centerY + t.h / 2);
     s.push(
       `<rect x="${x}" y="${y}" width="${t.w * scale}" height="${t.h * scale}" fill="#333" stroke="#111"/>`,
@@ -102,26 +126,30 @@ function drawFacade(ctx: DrawCtx): void {
 function drawModule(ctx: DrawCtx, wall: WallId, m: WardModule): void {
   const { p, s, scale } = ctx;
   const starts = wallStart(p);
-  const X = (dataX: number) => ctx.ox + (starts[wall] + dataX) * scale;
+  const mirror = isMirrorWall(wall);
+  const X = (dataX: number) => elevDataX(p, wall, dataX, ctx.ox, starts, scale);
   const Y = (yMm: number) => ctx.oy - yMm * scale;
+  // левая экранная кромка проёма [d1, d1+wd] (для зеркальной стены — от data-правого края)
+  const span = (d1: number, wd: number) => (mirror ? X(d1 + wd) : X(d1));
   const tL = wallT(m, 'l');
   const tR = wallT(m, 'r');
+  const X0 = span(m.from, m.w);
 
   // внешний контур
   s.push(
-    `<rect x="${X(m.from)}" y="${Y(m.h)}" width="${m.w * scale}" height="${m.h * scale}" fill="none" stroke="#111" stroke-width="1.4"/>`,
+    `<rect x="${X0}" y="${Y(m.h)}" width="${m.w * scale}" height="${m.h * scale}" fill="none" stroke="#111" stroke-width="1.4"/>`,
   );
   // стенки (показываем фактическую толщину; общая — половина)
-  s.push(`<rect x="${X(m.from)}" y="${Y(m.h)}" width="${tL * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
-  s.push(`<rect x="${X(m.from + m.w - tR)}" y="${Y(m.h)}" width="${tR * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
-  s.push(`<rect x="${X(m.from)}" y="${Y(m.h)}" width="${m.w * scale}" height="${CARCASS_T * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
+  s.push(`<rect x="${X0}" y="${Y(m.h)}" width="${tL * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
+  s.push(`<rect x="${span(m.from + m.w - tR, tR)}" y="${Y(m.h)}" width="${tR * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
+  s.push(`<rect x="${X0}" y="${Y(m.h)}" width="${m.w * scale}" height="${CARCASS_T * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
   if (p.base > 0)
-    s.push(`<rect x="${X(m.from + tL)}" y="${Y(p.base)}" width="${(m.w - tL - tR) * scale}" height="${p.base * scale}" fill="#eee" stroke="#666" stroke-width="0.5"/>`);
+    s.push(`<rect x="${span(m.from + tL, m.w - tL - tR)}" y="${Y(p.base)}" width="${(m.w - tL - tR) * scale}" height="${p.base * scale}" fill="#eee" stroke="#666" stroke-width="0.5"/>`);
 
   // дерево
   const { leaves, dividers } = layoutModule(p, m);
   for (const lb of leaves) {
-    const x = X(lb.x);
+    const x = span(lb.x, lb.w);
     const y = Y(lb.y + lb.h);
     const w = lb.w * scale;
     const h = lb.h * scale;
@@ -139,8 +167,10 @@ function drawModule(ctx: DrawCtx, wall: WallId, m: WardModule): void {
             : '#d8c39a';
       s.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" fill-opacity="0.55" stroke="#5a4630" stroke-width="0.9"/>`);
       if (face.kind === 'door') {
-        // диагональ петли
-        if (face.hinge === 'left') s.push(`<line x1="${x}" y1="${y}" x2="${x + w}" y2="${y + h}" stroke="#5a4630" stroke-width="0.5" stroke-dasharray="3 2"/>`);
+        // диагональ кромки петли: на зеркальной стене направление разворачивается
+        const hingeLeftOnScreen = (face.hinge === 'left') !== mirror;
+        if (hingeLeftOnScreen)
+          s.push(`<line x1="${x}" y1="${y}" x2="${x + w}" y2="${y + h}" stroke="#5a4630" stroke-width="0.5" stroke-dasharray="3 2"/>`);
         else s.push(`<line x1="${x + w}" y1="${y}" x2="${x}" y2="${y + h}" stroke="#5a4630" stroke-width="0.5" stroke-dasharray="3 2"/>`);
       }
       if (face.kind === 'drawers') {
@@ -155,7 +185,24 @@ function drawModule(ctx: DrawCtx, wall: WallId, m: WardModule): void {
   }
   for (const d of dividers) {
     s.push(
-      `<rect x="${X(d.x)}" y="${Y(d.y + d.h)}" width="${d.w * scale}" height="${d.h * scale}" fill="#ccc" stroke="#666" stroke-width="0.5"/>`,
+      `<rect x="${span(d.x, d.w)}" y="${Y(d.y + d.h)}" width="${d.w * scale}" height="${d.h * scale}" fill="#ccc" stroke="#666" stroke-width="0.5"/>`,
+    );
+  }
+  // купейные створки поверх отсеков
+  for (const sb of slidingBoxes(p, m)) {
+    const ov = Math.min(sb.overlap, sb.w / (sb.doors * 3));
+    const dw = (sb.w + ov * (sb.doors - 1)) / sb.doors;
+    const sx = span(sb.x, sb.w);
+    const sy = Y(sb.y + sb.h);
+    for (let i = 0; i < sb.doors; i++) {
+      const dxi = mirror ? sx + (sb.w - dw - i * (dw - ov)) * scale : sx + i * (dw - ov) * scale;
+      s.push(
+        `<rect x="${dxi}" y="${sy}" width="${dw * scale}" height="${sb.h * scale}" fill="#b9c3cf" fill-opacity="0.35" stroke="#4a5563" stroke-width="0.8"/>`,
+        `<line x1="${dxi}" y1="${sy}" x2="${dxi}" y2="${sy + sb.h * scale}" stroke="#4a5563" stroke-width="1.4"/>`,
+      );
+    }
+    s.push(
+      `<text x="${sx + (sb.w * scale) / 2}" y="${sy - 3}" font-size="7" fill="#4a5563" text-anchor="middle">купе ×${sb.doors} (нахлёст ${Math.round(ov)})</text>`,
     );
   }
 
@@ -174,7 +221,8 @@ function drawModule(ctx: DrawCtx, wall: WallId, m: WardModule): void {
       `${CARCASS_T} (общая)`,
     );
   }
-  dimV(ctx, X(refs.r) + 12, Y(0), X(refs.r) + 12, Y(m.h), `${m.h}`);
+  const hOffset = mirror ? -12 : 12;
+  dimV(ctx, X(refs.r) + hOffset, Y(0), X(refs.r) + hOffset, Y(m.h), `${m.h}`);
 
   // размеры отсеков — строго по фактической раскладке (границы плит)
   dimChildren(ctx, m.root, [], nodeBoxes(p, m), X, Y);

@@ -22,6 +22,7 @@ import type {
   LeafFace,
   Path,
   Project,
+  SlidingSpec,
   SplitNode,
   WallId,
   WardModule,
@@ -351,6 +352,19 @@ export function setSplitDir(id: string, path: Path): void {
     if (!node || node.type !== 'split') return;
     node.dir = node.dir === 'v' ? 'h' : 'v';
     normalizeTree(p, m);
+  });
+}
+
+/** Включить/выключить купейную систему поверх секции (split-узла). */
+export function setSliding(
+  id: string,
+  path: Path,
+  spec: { doors: number; fill?: string; glass?: boolean } | null,
+): void {
+  patchModule(id, (m) => {
+    const node = resolveNode(m.root, path);
+    if (node?.type !== 'split') return;
+    node.sliding = spec ? { doors: clamp(spec.doors, 2, 6), fill: spec.fill, glass: spec.glass, overlap: 25 } : null;
   });
 }
 

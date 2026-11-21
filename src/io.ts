@@ -1,6 +1,7 @@
 import { store } from './store.ts';
 import { ui, renderAll } from './state.ts';
 import { migrate } from './migrate.ts';
+import { bomToCsv, buildBom } from './bom.ts';
 
 function downloadBlob(blob: Blob, filename: string): void {
   const a = document.createElement('a');
@@ -37,6 +38,15 @@ export function openJson(): void {
     rd.readAsText(f);
   });
   input.click();
+}
+
+export function exportCsv(): void {
+  const boms = buildBom(store.project);
+  // BOM для Excel: UTF-8 BOM, чтобы кириллица открывалась корректно
+  const csv = '\ufeff' + bomToCsv(boms);
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const name = (store.project.name || 'wardrobe').replace(/\s+/g, '_');
+  downloadBlob(blob, `${name}_spec.csv`);
 }
 
 export async function exportPng(): Promise<void> {

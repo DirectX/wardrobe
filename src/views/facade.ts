@@ -10,6 +10,7 @@ import {
   layoutModule,
   modulesOn,
   shelfYsIn,
+  slidingBoxes,
   snapTolerance,
   totalElevationWidth,
   wallAtX,
@@ -304,6 +305,11 @@ function renderModule(
   for (const lb of leaves) out.push(renderLeaf(ctx, m, lb, isSel));
   for (const d of dividers) out.push(renderDividerStructure(ctx, d));
 
+  // купейные створки поверх отсеков
+  for (const sb of slidingBoxes(p, m)) {
+    out.push(renderSliding(ctx, m, sb, isSel));
+  }
+
   if (p.base > 0)
     out.push(
       `<rect x="${X + 24}" y="${fy(p.base)}" width="${Math.max(0, m.w - 48)}" height="${p.base}" fill="${COL.plinth}"/>`,
@@ -348,6 +354,50 @@ function renderModule(
     }
   }
 
+  return out.join('');
+}
+
+function renderSliding(ctx: RenderCtx, m: WardModule, sb: import('../geometry.ts').SlidingBox, moduleSelected: boolean): string {
+  const { fy, span } = ctx;
+  const x = span(sb.x, sb.w);
+  const y = fy(sb.y + sb.h);
+  const ov = Math.min(sb.overlap, sb.w / (sb.doors * 3));
+  const dw = (sb.w + ov * (sb.doors - 1)) / sb.doors;
+  const fill = sb.fill ? FACADE_FILLS[sb.fill] ?? sb.fill : '#c9a877';
+  const selected = moduleSelected && ui.path && ui.path.length === sb.path.length && ui.path.every((v, i) => v === sb.path[i]);
+  const out: string[] = [];
+  out.push(
+    `<g data-hit="sliding" data-id="${m.id}" data-path="${pathStr(sb.path)}" style="cursor:pointer">`,
+    `<title>Купе: ${sb.doors} створки, нахлёст ${Math.round(ov)} мм</title>`,
+  );
+  // направляющие сверху/снизу
+  out.push(
+    `<rect x="${x}" y="${y}" width="${sb.w}" height="10" fill="#7d8592"/>`,
+    `<rect x="${x}" y="${fy(sb.y) - 10}" width="${sb.w}" height="10" fill="#7d8592"/>`,
+  );
+  for (let i = 0; i < sb.doors; i++) {
+    // раскладка: двери чередуются по двум направляющим; смещение i-й = i*(dw-ov)
+    const dx = span(sb.x + i * (dw - ov), dw);
+    out.push(
+      `<rect x="${dx}" y="${y + 10}" width="${dw}" height="${Math.max(0, sb.h - 20)}" fill="${sb.glass ? '#9fc3d8' : fill}" fill-opacity="${sb.glass ? 0.55 : 0.92}" stroke="#5a4630" stroke-width="1" vector-effect="non-scaling-stroke"/>`,
+    );
+    // профиль-ручка по вертикальным кромкам
+    out.push(
+      `<rect x="${dx}" y="${y + 10}" width="14" height="${Math.max(0, sb.h - 20)}" fill="#8f97a3"/>`,
+      `<rect x="${dx + dw - 14}" y="${y + 10}" width="14" height="${Math.max(0, sb.h - 20)}" fill="#8f97a3"/>`,
+    );
+    if (sb.glass) {
+      out.push(
+        `<line x1="${dx + dw * 0.2}" y1="${y + sb.h * 0.8}" x2="${dx + dw * 0.65}" y2="${y + sb.h * 0.2}" stroke="#ffffff66" stroke-width="3" vector-effect="non-scaling-stroke"/>`,
+      );
+    }
+  }
+  if (selected) {
+    out.push(
+      `<rect x="${x + 2}" y="${y + 2}" width="${Math.max(0, sb.w - 4)}" height="${Math.max(0, sb.h - 4)}" fill="none" stroke="${COL.cell}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`,
+    );
+  }
+  out.push(`</g>`);
   return out.join('');
 }
 
@@ -516,6 +566,19 @@ export function attachFacade(el: SVGSVGElement): void {
         mode: 'edge',
         id: m.id,
         dir: (target?.getAttribute('data-dir') as 'l' | 'r') ?? 'r',
+        wall: m.wall,
+        sign: dataSign(m.wall),
+        origFrom: m.from,
+        origW: m.w,
+        needCp: true,
+      };
+    } else if (hit === 'sliding' && m && target) {
+      select({ kind: 'module', id: m.id }, pathParse(target.getAttribute('data-path') ?? ''));
+      ui.wall = m.wall;
+      drag = {
+        ...base,
+        mode: 'move',
+        id: m.id,
         wall: m.wall,
         sign: dataSign(m.wall),
         origFrom: m.from,

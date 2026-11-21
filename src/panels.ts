@@ -11,6 +11,7 @@ import {
   setFaceGroup,
   setModuleBox,
   setSharedWall,
+  setSliding,
   setSplitDir,
   setSplitT,
   splitLeaf,
@@ -21,7 +22,7 @@ import { WALLS, cornerZones, countLeaves, layoutModule, nodeBoxes } from './geom
 import { getNode, pathEq } from './types.ts';
 import { validate } from './validate.ts';
 import { fitFacade } from './views/facade.ts';
-import { openJson, exportPng, saveJson } from './io.ts';
+import { openJson, exportPng, saveJson, exportCsv } from './io.ts';
 import { openPrintReport } from './print.ts';
 import type {
   BoxNode,
@@ -229,6 +230,7 @@ export function initToolbar(root: HTMLElement): void {
     btn('📂 Открыть', () => openJson(), 'Загрузить проект из JSON'),
     btn('🖼 PNG', () => void exportPng(), 'Сохранить фасад картинкой'),
     btn('🖨 PDF', () => openPrintReport(), 'Печатный отчёт: чертёж с размерами + спецификация → Сохранить как PDF'),
+    btn('⬇ CSV', () => exportCsv(), 'Спецификация раскроя в CSV (для Excel)'),
   );
 }
 
@@ -286,6 +288,17 @@ export function renderLibrary(root: HTMLElement): void {
               })(),
             ),
             h('div', { class: 'row' },
+              (() => {
+                const node = getNode(m.root, path);
+                if (node?.type !== 'split') return h('span');
+                const on = !!node.sliding;
+                const b = btn(on ? '◧ Убрать купе' : '◫ Купе-двери', () => {
+                  setSliding(m.id, path, on ? null : { doors: Math.max(2, Math.min(4, node.children.length)), fill: 'дуб лён' });
+                  renderAll();
+                }, on ? 'Снять раздвижные створки с секции' : 'Накрыть секцию раздвижными створками');
+                if (on) b.classList.add('active');
+                return b;
+              })(),
               btn('✕ Убрать узел', () => removeNode(m.id, path), 'Удалить отсек/секцию — размер уходит соседу'),
             ),
             h('div', { class: 'hint' }, 'Свойства лица (ниша/дверца/ящики) — в правой панели.'),
@@ -504,6 +517,47 @@ function renderSplitProps(
       }, 'Выбрать родительский узел') : h('span'),
     ),
   );
+
+  // купейная система поверх секции
+  const sl = node.sliding;
+  root.append(h('div', { class: 'hint' }, sl ? 'Купейные створки поверх секции:' : 'Купе (раздвижные створки поверх секции):'));
+  root.append(
+    h(
+      'div',
+      { class: 'row' },
+      sl
+        ? fieldNum(
+            'створок',
+            sl.doors,
+            (v) => setSliding(m.id, path, { doors: Math.max(2, Math.min(6, Math.round(v))), fill: sl.fill, glass: sl.glass }),
+            { step: '1', min: 2, max: 6 },
+          )
+        : h('span'),
+      btn(sl ? '◧ Убрать купе' : '◫ Купе-двери', () => {
+        setSliding(m.id, path, sl ? null : { doors: 2, fill: 'дуб лён' });
+        renderAll();
+      }),
+    ),
+  );
+  if (sl) {
+    root.append(
+      fieldSelect(
+        'цвет купе',
+        sl.fill ?? '',
+        [['', '—'], ...Object.keys(FACADE_FILLS).map((k): [string, string] => [k, k])],
+        (v) => setSliding(m.id, path, { doors: sl.doors, fill: v || undefined, glass: sl.glass }),
+      ),
+      fieldSelect(
+        'стекло купе',
+        sl.glass ? '1' : '0',
+        [
+          ['0', 'нет'],
+          ['1', 'да'],
+        ],
+        (v) => setSliding(m.id, path, { doors: sl.doors, fill: sl.fill, glass: v === '1' || undefined }),
+      ),
+    );
+  }
 
   // массовые операции над всеми листьями секции
   root.append(h('div', { class: 'hint' }, 'Лицо всех отсеков секции:'));

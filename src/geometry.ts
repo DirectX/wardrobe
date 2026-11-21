@@ -487,3 +487,55 @@ export function applySharedTransitions(
   }
   return [...touched];
 }
+
+// ------------------------------------------------------------------ купе
+
+export interface SlidingBox {
+  /** путь split-узла с купейной системой */
+  path: Path;
+  doors: number;
+  overlap: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill?: string;
+  glass?: boolean;
+}
+
+/** Все купейные системы модуля с их боксами (по nodeBoxes). */
+export function slidingBoxes(p: Project, m: WardModule): SlidingBox[] {
+  const boxes = nodeBoxes(p, m);
+  const out: SlidingBox[] = [];
+  const walk = (node: BoxNode, path: Path) => {
+    if (node.type !== 'split') return;
+    const sl = node.sliding;
+    if (sl && sl.doors >= 2) {
+      const b = boxes.get(path.join('.'));
+      if (b)
+        out.push({
+          path,
+          doors: sl.doors,
+          overlap: sl.overlap ?? 25,
+          x: b.x,
+          y: b.y,
+          w: b.w,
+          h: b.h,
+          fill: sl.fill,
+          glass: sl.glass,
+        });
+    }
+    node.children.forEach((c, i) => walk(c.node, [...path, i]));
+  };
+  walk(m.root, []);
+  return out;
+}
+
+/** Есть ли закрытая створка купе в точке (xLocal вдоль стены, yFloor от пола). */
+export function slidingAtPoint(p: Project, m: WardModule, xLocal: number, yFloor: number): SlidingBox | null {
+  for (const sb of slidingBoxes(p, m)) {
+    if (xLocal >= sb.x - 0.5 && xLocal <= sb.x + sb.w + 0.5 && yFloor >= sb.y - 0.5 && yFloor <= sb.y + sb.h + 0.5)
+      return sb;
+  }
+  return null;
+}

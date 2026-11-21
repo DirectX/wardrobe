@@ -13,6 +13,7 @@ import {
   setFace,
   setFaceGroup,
   setSharedWall,
+  setSliding,
   splitLeaf,
   toggleFace,
 } from './edit.ts';
@@ -27,15 +28,17 @@ import {
   nodeBoxes,
   normalizeTree,
   shelfYsIn,
+  slidingAtPoint,
+  slidingBoxes,
   snapTolerance,
   wallEnd,
   wallStart,
 } from './geometry.ts';
 import { validate } from './validate.ts';
 import { migrate } from './migrate.ts';
-import { buildBom } from './bom.ts';
+import { bomToCsv, buildBom } from './bom.ts';
 import { leaf } from './defaults.ts';
-import { buildReportHtml, moduleDimRefs } from './print.ts';
+import { buildReportHtml, elevDataX, moduleDimRefs } from './print.ts';
 import { renderFacade } from './views/facade.ts';
 import { renderLibrary, renderProps } from './panels.ts';
 import type { LeafFace, Path, Project } from './types.ts';
@@ -921,6 +924,104 @@ export function runAutoTest(): void {
     } catch (e) {
       check(`print: отчёт построен (${String(e)})`, false);
     }
+  }
+
+  // 21. купейная система
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+      pp.sockets = [];
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    splitLeaf(bm.id, [], 'v');
+    splitLeaf(bm.id, [0], 'h');
+
+    // включаем купе на секции [0]
+    setSliding(bm.id, [0], { doors: 3, fill: 'графит' });
+    let m = mod(bm.id);
+    const boxes = slidingBoxes(store.project, m);
+    check('sliding: секция получила купе ×3', boxes.length === 1 && boxes[0].doors === 3);
+
+    const sb = boxes[0];
+    const box0 = nodeBoxes(store.project, m).get('0')!;
+    check(
+      'sliding: бокс створок = бокс секции',
+      Math.abs(sb.x - box0.x) < 0.5 && Math.abs(sb.w - box0.w) < 0.5 && Math.abs(sb.h - box0.h) < 0.5,
+    );
+    check('sliding: нахлёст 25 мм', Math.abs(sb.overlap - 25) < 0.01);
+
+    // hit-test: точка внутри секции закрыта створкой, соседняя — нет
+    const hitIn = slidingAtPoint(store.project, m, sb.x + sb.w / 2, sb.y + sb.h / 2);
+    const hitOut = slidingAtPoint(store.project, m, sb.x + sb.w + 100, sb.y + sb.h / 2);
+    check('sliding: hit-test внутри/снаружи', !!hitIn && !hitOut);
+
+    // ТВ за купе — ошибка
+    store.update((pp) => {
+      pp.tv = { wall: 'center', centerX: Math.round(sb.x + sb.w / 2), centerY: Math.round(sb.y + sb.h / 2), w: 400, h: 250 };
+    });
+    check('sliding: ТВ за створками — ошибка', validate(store.project).some((i) => i.message.includes('ТВ перекрыт')));
+    store.update((pp) => (pp.tv = null));
+
+    // розетка за купе — предупреждение
+    store.update((pp) => {
+      pp.sockets.push({ id: 's-test1', wall: 'center', x: Math.round(sb.x + sb.w / 2), y: Math.round(sb.y + 100) });
+    });
+    check('sliding: розетка за створками — предупреждение', validate(store.project).some((i) => i.message.includes('спрятана')));
+    store.update((pp) => (pp.sockets = []));
+
+    // BOM: створки, профили, направляющие
+    const parts = buildBom(store.project)[0].parts;
+    const doors = parts.filter((x) => x.cat === 'sliding-door');
+    const tracks = parts.filter((x) => x.cat === 'sliding-track');
+    const profiles = parts.filter((x) => x.cat === 'sliding-profile');
+    check('sliding BOM: 3 створки', doors.length === 1 && doors[0].qty === 3);
+    check('sliding BOM: 2 направляющие', tracks.length === 1 && tracks[0].qty === 2);
+    check('sliding BOM: профили', profiles.length === 1 && profiles[0].qty === 3);
+    check('sliding BOM: створка = высота секции', doors[0].a === Math.round(sb.h));
+
+    // CSV
+    const csv = bomToCsv(buildBom(store.project));
+    check('csv: заголовок и строки', csv.startsWith('Модуль;Стена') && csv.split('\n').length > 5);
+    check('csv: створки купе присутствуют', csv.includes('Створка купе'));
+
+    // снятие купе
+    setSliding(bm.id, [0], null);
+    check('sliding: снятие купе', slidingBoxes(store.project, mod(bm.id)).length === 0);
+  }
+
+  // 22. печатный отчёт: левая стена зеркалится (угол справа, как в приложении)
+  {
+    store.update((pp) => {
+      pp.walls.left.length = 1200;
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+    });
+    // модуль на центральной у левого угла → зона на левой стене 600 от угла (from=0)
+    addModule('center');
+    const mc = modulesOn(store.project, 'center')[0];
+    moveModule(mc.id, 0);
+    check('print-mirror: зона на левой стене появилась', cornerZones(store.project, 'left').start > 0);
+
+    const starts = wallStart(store.project);
+    const L = store.project.walls.left.length;
+    // data from=0 (угол) на зеркальной стене должен попадать на ПРАВЫЙ край плиты
+    const xCorner = elevDataX(store.project, 'left', 0, 0, starts, 1);
+    const xFar = elevDataX(store.project, 'left', L, 0, starts, 1);
+    check(
+      'print-mirror: угол левой стены — справа',
+      Math.abs(xCorner - (starts.left + L)) < 0.5 && Math.abs(xFar - starts.left) < 0.5,
+    );
+    // центральная/правая — не зеркалятся
+    check(
+      'print-mirror: центральная без зеркала',
+      Math.abs(elevDataX(store.project, 'center', 500, 0, starts, 1) - (starts.center + 500)) < 0.5,
+    );
+
+    const html = buildReportHtml(store.project);
+    check('print-mirror: отчёт построен без NaN', !html.includes('NaN') && !html.includes('undefined'));
   }
 
   // инвариант финальный

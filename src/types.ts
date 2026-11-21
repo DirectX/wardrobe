@@ -50,6 +50,16 @@ export interface SplitChild {
   node: BoxNode;
 }
 
+/** Купейная система: раздвижные створки поверх секции целиком. */
+export interface SlidingSpec {
+  /** число створок, 2..6 */
+  doors: number;
+  fill?: string;
+  glass?: boolean;
+  /** нахлёст створок, мм (стандарт купейных систем) */
+  overlap?: number;
+}
+
 export interface SplitNode {
   type: 'split';
   /** v: дети слева направо (ось — ширина); h: сверху вниз (ось — высота) */
@@ -57,6 +67,8 @@ export interface SplitNode {
   /** толщина перегородки между детьми, мм */
   t: number;
   children: SplitChild[];
+  /** купейные двери поверх всей секции (опционально) */
+  sliding?: SlidingSpec | null;
 }
 
 export type BoxNode = LeafNode | SplitNode;

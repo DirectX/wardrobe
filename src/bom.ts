@@ -5,7 +5,7 @@
 // элементы (боковины вложенных секций) встают между ними.
 
 import type { BoxNode, Path, Project, WallId, WardModule } from './types.ts';
-import { CARCASS_T, modulesOn, wallT } from './geometry.ts';
+import { CARCASS_T, modulesOn, slidingBoxes, wallT } from './geometry.ts';
 
 export interface Part {
   /** наименование детали */
@@ -20,7 +20,17 @@ export interface Part {
   moduleId: string;
   path: Path;
   /** категория для группировки */
-  cat: 'carcass' | 'h-divider' | 'v-divider' | 'shelf' | 'facade' | 'plinth' | 'drawer-box';
+  cat:
+    | 'carcass'
+    | 'h-divider'
+    | 'v-divider'
+    | 'shelf'
+    | 'facade'
+    | 'plinth'
+    | 'drawer-box'
+    | 'sliding-door'
+    | 'sliding-track'
+    | 'sliding-profile';
 }
 
 export interface ModuleBom {
@@ -132,6 +142,18 @@ function moduleParts(p: Project, m: WardModule): Part[] {
     }
   };
 
+  // купейные системы: створки и направляющие по боксам секций
+  for (const sb of slidingBoxes(p, m)) {
+    const ov = Math.min(sb.overlap, sb.w / (sb.doors * 3));
+    const dw = (sb.w + ov * (sb.doors - 1)) / sb.doors;
+    for (let i = 0; i < sb.doors; i++) {
+      push(sb.glass ? 'Створка купе (стекло)' : 'Створка купе', sb.h, dw, sb.glass ? 4 : PANEL_T, 'sliding-door', sb.path);
+      push('Профиль створки', sb.h, 26, 1.2, 'sliding-profile', sb.path);
+    }
+    push('Направляющая купе', Math.round(sb.w), 82, 1.5, 'sliding-track', sb.path);
+    push('Направляющая купе', Math.round(sb.w), 82, 1.5, 'sliding-track', sb.path);
+  }
+
   const ib = layoutInterior(p, m);
   walk(m.root, [], ib.w, ib.h);
 
@@ -142,8 +164,11 @@ function moduleParts(p: Project, m: WardModule): Part[] {
     'v-divider': 2,
     carcass: 3,
     facade: 4,
-    'drawer-box': 5,
-    plinth: 6,
+    'sliding-door': 5,
+    'sliding-track': 6,
+    'sliding-profile': 7,
+    'drawer-box': 8,
+    plinth: 9,
   };
   parts.sort((a, b) => order[a.cat] - order[b.cat] || b.a - a.a);
   return parts;
@@ -167,3 +192,38 @@ export function totalArea(boms: ModuleBom[]): number {
 }
 
 
+
+
+/** Спецификация в CSV (разделитель «;» — удобно для русского Excel). */
+export function bomToCsv(boms: ModuleBom[]): string {
+  const esc = (v: string | number) => {
+    const s = String(v);
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows: string[] = [
+    ['Модуль', 'Стена', 'Отступ, мм', 'Ш, мм', 'В, мм', 'Глубина, мм', 'Узел', 'Категория', 'Деталь', 'Длина, мм', 'Ширина, мм', 'Толщина, мм', 'Кол-во', 'Площадь, м²'].map(esc).join(';'),
+  ];
+  for (const b of boms) {
+    for (const part of b.parts) {
+      rows.push(
+        [
+          b.m.id,
+          b.m.wall,
+          b.m.from,
+          b.m.w,
+          b.m.h,
+          b.m.depth,
+          part.path.join('.') || '—',
+          part.cat,
+          part.name,
+          part.a,
+          part.b,
+          part.t,
+          part.qty,
+          ((part.a * part.b * part.qty) / 1e6).toFixed(3),
+        ].map(esc).join(';'),
+      );
+    }
+  }
+  return rows.join('\n');
+}
