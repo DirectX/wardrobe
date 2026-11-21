@@ -24,6 +24,7 @@ import {
   interiorBox,
   layoutModule,
   modulesOn,
+  nodeBoxes,
   normalizeTree,
   shelfYsIn,
   snapTolerance,
@@ -512,7 +513,7 @@ export function runAutoTest(): void {
       );
     }
 
-    // 15c. привязка вертикальной перегородки к ЦЕНТРУ модуля
+    // 15c. привязка вертикальной перегородки к центру модуля и к центру секции
     {
       store.update((pp) => {
         pp.walls.center.length = 3000;
@@ -520,37 +521,61 @@ export function runAutoTest(): void {
       });
       addModule('center');
       const mA = modulesOn(store.project, 'center')[0];
-      // два v-разреза: перегородки в 1/4 и 3/4 — не в центре
-      splitLeaf(mA.id, [], 'v');
-      splitLeaf(mA.id, [0], 'v');
+      splitLeaf(mA.id, [], 'v'); // корневая v-перегородка — ровно по центру
       const m = mod(mA.id);
       const centerX = m.from + m.w / 2;
+      const tol = snapTolerance(store.project, 0.128);
+
       const cands = dividerSnapCandidates(store.project, 'center', 'v', {
         moduleId: mA.id,
-        path: [0],
+        path: [],
         after: 0,
       });
       check(
         'snap-v: центр модуля среди кандидатов',
         cands.some((c) => Math.abs(c - centerX) < 0.5),
       );
-      // тянем перегородку [0].0 к центру модуля (в пределах допуска)
-      const tol = snapTolerance(store.project, 0.128);
-      dragDivider(mA.id, [0], 0, centerX + tol * 0.5, {
-        candidates: cands,
-        tol,
-      });
-      const d = layoutModule(store.project, mod(mA.id)).dividers.find(
-        (x) => x.dir === 'v' && x.path.length === 1 && x.path[0] === 0 && x.after === 0,
+
+      // уводим корневую перегородку от центра (дальше допуска)
+      dragDivider(mA.id, [], 0, centerX - tol * 3);
+      const moved = layoutModule(store.project, mod(mA.id)).dividers.find(
+        (d) => d.dir === 'v' && d.path.length === 0,
+      )!;
+      check('snap-v: перегородка уведена от центра', Math.abs(moved.x + moved.w / 2 - centerX) > tol);
+
+      // тянем обратно «неточно» — должна примагнититься к центру модуля
+      dragDivider(mA.id, [], 0, centerX + tol * 0.5, { candidates: cands, tol });
+      const back = layoutModule(store.project, mod(mA.id)).dividers.find(
+        (d) => d.dir === 'v' && d.path.length === 0,
       )!;
       check(
-        `snap-v: перегородка притянута к центру (${Math.round(d.x + d.w / 2)} ≈ ${Math.round(centerX)})`,
-        Math.abs(d.x + d.w / 2 - centerX) < 0.6,
+        `snap-v: притянута к центру модуля (${Math.round(back.x + back.w / 2)} ≈ ${Math.round(centerX)})`,
+        Math.abs(back.x + back.w / 2 - centerX) < 0.6,
+      );
+
+      // центр ВЛОЖЕННОЙ секции тоже является целью привязки
+      splitLeaf(mA.id, [0], 'v');
+      const m2 = mod(mA.id);
+      const secBox = nodeBoxes(store.project, m2).get('0')!;
+      const secCenter = secBox.x + secBox.w / 2;
+      const cands2 = dividerSnapCandidates(store.project, 'center', 'v', {
+        moduleId: mA.id,
+        path: [0],
+        after: 0,
+      });
+      check(
+        'snap-v: центр вложенной секции среди кандидатов',
+        cands2.some((c) => Math.abs(c - secCenter) < 0.5),
+      );
+      dragDivider(mA.id, [0], 0, secCenter + tol * 0.4, { candidates: cands2, tol });
+      const nested = layoutModule(store.project, mod(mA.id)).dividers.find(
+        (d) => d.dir === 'v' && d.path.length === 1 && d.path[0] === 0,
+      )!;
+      check(
+        `snap-v: притянута к центру секции (${Math.round(nested.x + nested.w / 2)} ≈ ${Math.round(secCenter)})`,
+        Math.abs(nested.x + nested.w / 2 - secCenter) < 0.6,
       );
     }
-    check('панель: лицо отсека в свойствах справа', hasFaceProps);
-    select(null);
-    store.update((pp) => (pp.walls.center.length = Lc));
   }
 
   // 16. РЕАЛЬНЫЙ клик по ячейке: что перехватывает и что выбирается
