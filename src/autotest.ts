@@ -511,6 +511,43 @@ export function runAutoTest(): void {
         Math.abs(dA.y + dA.h / 2 - target) < 0.6,
       );
     }
+
+    // 15c. привязка вертикальной перегородки к ЦЕНТРУ модуля
+    {
+      store.update((pp) => {
+        pp.walls.center.length = 3000;
+        pp.modules = [];
+      });
+      addModule('center');
+      const mA = modulesOn(store.project, 'center')[0];
+      // два v-разреза: перегородки в 1/4 и 3/4 — не в центре
+      splitLeaf(mA.id, [], 'v');
+      splitLeaf(mA.id, [0], 'v');
+      const m = mod(mA.id);
+      const centerX = m.from + m.w / 2;
+      const cands = dividerSnapCandidates(store.project, 'center', 'v', {
+        moduleId: mA.id,
+        path: [0],
+        after: 0,
+      });
+      check(
+        'snap-v: центр модуля среди кандидатов',
+        cands.some((c) => Math.abs(c - centerX) < 0.5),
+      );
+      // тянем перегородку [0].0 к центру модуля (в пределах допуска)
+      const tol = snapTolerance(store.project, 0.128);
+      dragDivider(mA.id, [0], 0, centerX + tol * 0.5, {
+        candidates: cands,
+        tol,
+      });
+      const d = layoutModule(store.project, mod(mA.id)).dividers.find(
+        (x) => x.dir === 'v' && x.path.length === 1 && x.path[0] === 0 && x.after === 0,
+      )!;
+      check(
+        `snap-v: перегородка притянута к центру (${Math.round(d.x + d.w / 2)} ≈ ${Math.round(centerX)})`,
+        Math.abs(d.x + d.w / 2 - centerX) < 0.6,
+      );
+    }
     check('панель: лицо отсека в свойствах справа', hasFaceProps);
     select(null);
     store.update((pp) => (pp.walls.center.length = Lc));
