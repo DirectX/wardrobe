@@ -5,7 +5,7 @@
 // элементы (боковины вложенных секций) встают между ними.
 
 import type { BoxNode, Path, Project, WallId, WardModule } from './types.ts';
-import { CARCASS_T, modulesOn, slidingBoxes, wallT } from './geometry.ts';
+import { CARCASS_T, hasFlushNeighbor, modulesOn, slidingBoxes, wallT } from './geometry.ts';
 
 export interface Part {
   /** наименование детали */
@@ -90,9 +90,22 @@ function moduleParts(p: Project, m: WardModule): Part[] {
     else parts.push({ name, a: aR, b: bR, t, qty: 1, moduleId: m.id, path, cat });
   };
 
-  // --- корпус
-  push('Стенка левая', bodyH, m.depth, tL, 'carcass', []);
-  push('Стенка правая', bodyH, m.depth, tR, 'carcass', []);
+  // --- корпус.
+  // Общая стенка стыка — ОДНА плита 18 мм; в раскрой она попадает один раз,
+  // у ЛЕВОГО модуля пары («Стенка правая (общая)»). Правый модуль свою левую
+  // стенку не кроит — он прислоняется к плите соседа. Половинки по 9 мм —
+  // только модель внутреннего пространства, не деталь.
+  const sharedL = m.leftShared && hasFlushNeighbor(p, m, 'l');
+  const sharedR = m.rightShared && hasFlushNeighbor(p, m, 'r');
+  if (!sharedL) push('Стенка левая', bodyH, m.depth, CARCASS_T, 'carcass', []);
+  push(
+    sharedR ? 'Стенка правая (общая с соседом)' : 'Стенка правая',
+    bodyH,
+    m.depth,
+    CARCASS_T,
+    'carcass',
+    [],
+  );
   push('Крышка', innerW, m.depth, T, 'carcass', []);
   push('Дно', innerW, m.depth, T, 'carcass', []);
   if (p.base > 0) push('Цоколь', innerW, 80, PANEL_T, 'plinth', []);

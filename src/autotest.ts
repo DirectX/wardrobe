@@ -877,7 +877,42 @@ export function runAutoTest(): void {
     check('bom: горизонтальные идут первыми (приоритет)', firstCat === 'h-divider');
     const facade = parts.find((x) => x.cat === 'facade');
     check('bom: фасад дверцы учтён', !!facade && facade.qty >= 1);
-    check('bom: корпус — 4 панели + цоколь', parts.filter((x) => x.cat === 'carcass').length === 4);
+    check('bom: корпус — 4 панели (модуль одиночный, стенки свои)', parts.filter((x) => x.cat === 'carcass').length === 4);
+    check(
+      'bom: одиночный модуль — стенки по 18 мм',
+      parts.filter((x) => x.name.startsWith('Стенка')).every((x) => x.t === 18),
+    );
+  }
+
+  // 19b. BOM общей стенки: одна плита 18 мм на стык, у ЛЕВОГО модуля
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+    });
+    addModule('center');
+    const mA = modulesOn(store.project, 'center')[0];
+    addModule('center'); // встаёт вплотную → общие стенки
+    const mB = modulesOn(store.project, 'center').filter((x) => x.id !== mA.id)[0];
+    check('shared-bom: стык включил общие стенки', mod(mA.id).rightShared && mod(mB.id).leftShared);
+
+    const boms = buildBom(store.project);
+    const partsA = boms.find((b) => b.m.id === mA.id)!.parts;
+    const partsB = boms.find((b) => b.m.id === mB.id)!.parts;
+
+    const sharedPanel = partsA.find((x) => x.name === 'Стенка правая (общая с соседом)');
+    check('shared-bom: у левого модуля общая плита 18 мм ×1', !!sharedPanel && sharedPanel.t === 18 && sharedPanel.qty === 1);
+    check('shared-bom: у левого своя левая стенка осталась', partsA.some((x) => x.name === 'Стенка левая' && x.t === 18));
+    check(
+      'shared-bom: у правого модуля НЕТ левой стенки',
+      !partsB.some((x) => x.name.startsWith('Стенка левая')),
+    );
+    check('shared-bom: у правого своя правая стенка 18', partsB.some((x) => x.name === 'Стенка правая' && x.t === 18));
+    check('shared-bom: половинок по 9 мм нигде нет', [...partsA, ...partsB].every((x) => x.t !== 9));
+
+    // CSV отражает общее правило
+    const csv = bomToCsv(boms);
+    check('shared-bom: CSV содержит общую стенку один раз', (csv.match(/Стенка правая \(общая с соседом\)/g) ?? []).length === 1);
   }
 
   // 20. печатный отчёт: размеры от граней плит, не от середины

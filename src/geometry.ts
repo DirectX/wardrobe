@@ -429,6 +429,17 @@ export function fitTree(p: Project, m: WardModule): void {
   walk(m.root, ib.w, ib.h);
 }
 
+/** Есть ли на стене сосед вплотную к указанной стороне модуля (стык общей стенки). */
+export function hasFlushNeighbor(p: Project, m: WardModule, side: 'l' | 'r'): boolean {
+  return modulesOn(p, m.wall).some(
+    (x) =>
+      x.id !== m.id &&
+      (side === 'l'
+        ? Math.abs(wallEnd(x) - m.from) < 1
+        : Math.abs(wallEnd(m) - x.from) < 1),
+  );
+}
+
 /** Пары модулей, стоящих вплотную (стык = потенциально общая стенка). */
 export function flushPairs(p: Project): Set<string> {
   const s = new Set<string>();

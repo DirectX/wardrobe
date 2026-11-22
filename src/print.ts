@@ -7,6 +7,7 @@ import {
   CARCASS_T,
   cornerZones,
   findOverlapRegions,
+  hasFlushNeighbor,
   layoutModule,
   modulesOn,
   nodeBoxes,
@@ -267,9 +268,8 @@ export function moduleDimRefs(
   p: Project,
   m: WardModule,
 ): { l: number; r: number; sharedPanel: number | null } {
-  const ms = modulesOn(p, m.wall);
-  const hasPrev = ms.some((x) => x.id !== m.id && Math.abs(wallEnd(x) - m.from) < 1);
-  const hasNext = ms.some((x) => x.id !== m.id && Math.abs(wallEnd(m) - x.from) < 1);
+  const hasPrev = hasFlushNeighbor(p, m, 'l');
+  const hasNext = hasFlushNeighbor(p, m, 'r');
   const tL = wallT(m, 'l');
   const tR = wallT(m, 'r');
   return {
