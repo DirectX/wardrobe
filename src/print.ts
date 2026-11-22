@@ -406,15 +406,17 @@ export function buildReportHtml(p: Project): string {
   // --- план
   const Lc = p.walls.center.length;
   const depthPlan = Math.max(p.walls.left.length, p.walls.right.length, 700);
-  const pScale = Math.min((cw * 0.55) / (Lc + 200), 300 / (depthPlan + 200));
+  const pScale = Math.min(cw / (Lc + 260), 320 / (depthPlan + 260));
   const pCtx: DrawCtx = {
     s,
     p,
     scale: pScale,
-    ox: MARGIN + 100 * pScale,
-    oy: 120 * pScale + 30,
+    ox: 90 * pScale, // запас слева под стену (T=60) и подпись
+    oy: 90 * pScale, // запас сверху под размерную линию
   };
-  s.push(`<svg width="${Math.round((Lc + 260) * pScale)}" height="${Math.round((depthPlan + 260) * pScale)}" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">`);
+  const planW = Math.round((Lc + 180) * pScale);
+  const planH = Math.round((depthPlan + 180) * pScale);
+  s.push(`<svg width="${planW}" height="${planH}" viewBox="0 0 ${planW} ${planH}" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">`);
   drawPlan(pCtx);
   s.push(`</svg>`);
   const planSvg = s.join('');
@@ -457,7 +459,6 @@ export function buildReportHtml(p: Project): string {
   tr.mod td { background: #f4f4f4; }
   .note { color: #555; font-size: 10px; margin-top: 8px; }
   svg { display: block; }
-  .row2 { display: flex; gap: 20px; align-items: flex-start; }
 </style>
 </head>
 <body>
@@ -471,13 +472,10 @@ export function buildReportHtml(p: Project): string {
   </div>
   <div class="page">
     <h2>План сверху (глубины модулей)</h2>
-    <div class="row2">
-      ${planSvg}
-      <div class="note" style="max-width:320px">
-        Горизонтальные перегородки и полки кроятся на полную внутреннюю ширину своего проёма
-        (приоритет распила); вертикальные — устанавливаются между ними.
-        Глубины модулей указаны на плане.
-      </div>
+    <div style="text-align:center">${planSvg}</div>
+    <div class="note">
+      Горизонтальные перегородки и полки кроятся на полную внутреннюю ширину своего проёма
+      (приоритет распила); вертикальные — устанавливаются между ними. Глубины модулей указаны на плане.
     </div>
     <h2>Спецификация раскроя</h2>
     <table>
