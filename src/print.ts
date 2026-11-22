@@ -6,6 +6,7 @@ import { store } from './store.ts';
 import {
   CARCASS_T,
   cornerZones,
+  findOverlapRegions,
   layoutModule,
   modulesOn,
   nodeBoxes,
@@ -119,6 +120,26 @@ function drawFacade(ctx: DrawCtx): void {
     s.push(
       `<circle cx="${x}" cy="${y}" r="3.4" fill="#fff" stroke="#111"/>`,
       `<text x="${x + 5}" y="${y + 3}" font-size="7.5" fill="#333">${so.x}/${so.y}</text>`,
+    );
+  }
+
+  // оверлей перекрывающихся фрагментов фасада (r.x — глобальная координата фасада)
+  for (const r of findOverlapRegions(p)) {
+    const rx = ox + r.x * scale;
+    const ry = Y(r.y + r.h);
+    const rw = r.w * scale;
+    const rh = r.h * scale;
+    const clipId = `ov-${Math.round(r.x)}-${Math.round(r.y)}`;
+    let hatch = '';
+    const diag = Math.max(rw, rh) + 8;
+    for (let q = -diag; q < rw + diag; q += 5) {
+      hatch += `<line x1="${rx + q}" y1="${ry - 2}" x2="${rx + q + diag}" y2="${ry + rh + 2}" stroke="#c0392b" stroke-width="0.8" opacity="0.5"/>`;
+    }
+    s.push(
+      `<clipPath id="${clipId}"><rect x="${rx}" y="${ry}" width="${rw}" height="${rh}"/></clipPath>`,
+      `<g clip-path="url(#${clipId})">${hatch}</g>`,
+      `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="none" stroke="#c0392b" stroke-width="1.2" stroke-dasharray="4 2"/>`,
+      `<text x="${rx + rw / 2}" y="${ry - 3}" font-size="7.5" fill="#c0392b" text-anchor="middle">перекрытие ${Math.round(r.w)}×${Math.round(r.h)}</text>`,
     );
   }
 }

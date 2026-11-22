@@ -1,5 +1,5 @@
 import type { Issue, Project } from './types.ts';
-import { WALLS, cornerZones, leafAtPoint, modulesOn, slidingAtPoint, wallEnd } from './geometry.ts';
+import { WALLS, cornerZones, findOverlapRegions, leafAtPoint, modulesOn, slidingAtPoint, wallEnd } from './geometry.ts';
 
 export function validate(p: Project): Issue[] {
   const out: Issue[] = [];
@@ -32,6 +32,11 @@ export function validate(p: Project): Issue[] {
       }
       prev = m;
     }
+  }
+
+  // перекрывающиеся фрагменты фасадов (створки/купе)
+  for (const r of findOverlapRegions(p)) {
+    out.push({ level: 'warn', message: r.reason, refs: r.refs });
   }
 
   const leafIsOpenAt = (wall: string, x: number, y: number): boolean | null => {

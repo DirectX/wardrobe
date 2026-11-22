@@ -6,6 +6,7 @@ import {
   cornerZones,
   dividerSnapCandidates,
   findModule,
+  findOverlapRegions,
   interiorBox,
   layoutModule,
   modulesOn,
@@ -80,6 +81,10 @@ function dataSign(wall: WallId): number {
 
 function pathStr(path: Path): string {
   return path.join('.');
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 export function pathParse(s: string): Path {
@@ -209,6 +214,28 @@ export function renderFacade(): void {
       `<circle cx="${cx - 16}" cy="${cy}" r="7" fill="${bad ? COL.danger : '#20242b'}"/>`,
       `<circle cx="${cx + 16}" cy="${cy}" r="7" fill="${bad ? COL.danger : '#20242b'}"/>`,
       `</g>`,
+    );
+  }
+
+  // оверлей перекрытий фасадов: красная штриховка поверх проблемных зон
+  for (const r of findOverlapRegions(p)) {
+    const rx = r.x; // глобальные координаты фасада уже зеркальны (toElev)
+    const ry = fy(r.y + r.h);
+    const clipId = `ov-${Math.round(rx)}-${Math.round(ry)}`;
+    let hatch = '';
+    const diag = Math.max(r.w, r.h) * 1.6;
+    for (let q = -diag; q < r.w + diag; q += 90) {
+      hatch += `<line x1="${rx + q}" y1="${ry - 10}" x2="${rx + q + diag}" y2="${ry + r.h + 10}" stroke="${COL.danger}" stroke-width="10" opacity="0.5" vector-effect="non-scaling-stroke"/>`;
+    }
+    parts.push(
+      `<clipPath id="${clipId}"><rect x="${rx}" y="${ry}" width="${r.w}" height="${r.h}"/></clipPath>`,
+      `<g clip-path="url(#${clipId})" style="pointer-events:none">${hatch}</g>`,
+      `<rect x="${rx}" y="${ry}" width="${r.w}" height="${r.h}" fill="none" stroke="${COL.danger}" stroke-width="2.5" stroke-dasharray="30 20" style="pointer-events:none" vector-effect="non-scaling-stroke"/>`,
+      `<title>${esc(r.reason)}</title>`,
+    );
+    // подпись
+    parts.push(
+      `<text x="${rx + r.w / 2}" y="${ry - 18}" font-size="44" fill="${COL.danger}" text-anchor="middle" style="pointer-events:none">⚠ перекрытие</text>`,
     );
   }
 

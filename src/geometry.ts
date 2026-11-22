@@ -539,3 +539,137 @@ export function slidingAtPoint(p: Project, m: WardModule, xLocal: number, yFloor
   }
   return null;
 }
+
+// ------------------------------------------------------------------ перекрытия фасадов
+
+/** Прямоугольник в глобальных координатах раскрытого фасада (x вдоль фасада, y от пола). */
+export interface FacadeRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Данные-координаты (вдоль стены) → глобальные координаты фасада (с зеркалом левой стены). */
+export function toElev(p: Project, wall: WallId, dataX: number, w: number): number {
+  const L = p.walls[wall].length;
+  return wallStart(p)[wall] + (wall === 'left' ? L - (dataX + w) : dataX);
+}
+
+export interface OverlapRegion extends FacadeRect {
+  reason: string;
+  refs: string[];
+}
+
+const LEAF_LABEL: Record<string, string> = {
+  door: 'дверца',
+  drawers: 'ящики',
+  panel: 'панель',
+  glass: 'стекло',
+};
+
+function intersect(a: FacadeRect, b: FacadeRect): FacadeRect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.w, b.x + b.w);
+  const y2 = Math.min(a.y + a.h, b.y + b.h);
+  if (x2 - x <= 1 || y2 - y <= 1) return null; // пренебрегаем щелями ≤1 мм
+  return { x, y, w: x2 - x, h: y2 - y };
+}
+
+/**
+ * Все перекрывающиеся фрагменты на фасаде:
+ *  1) корпуса модулей одной стены (ручной «Отступ» может их наложить);
+ *  2) элементы фасадов, competing за лицевую плоскость:
+ *     дверцы/ящики/панели отсеков и створки купе — в т.ч. вложенные
+ *     (купе поверх дверец, купе внутри купе, створки соседних секций).
+ */
+export function findOverlapRegions(p: Project): OverlapRegion[] {
+  const out: OverlapRegion[] = [];
+  const push = (r: FacadeRect | null, reason: string, refs: string[]) => {
+    if (r) out.push({ ...r, reason, refs });
+  };
+
+  for (const wall of WALLS) {
+    const ms = modulesOn(p, wall);
+    // 1) корпуса
+    for (let i = 0; i < ms.length; i++) {
+      for (let j = i + 1; j < ms.length; j++) {
+        const a = ms[i];
+        const b = ms[j];
+        const ra: FacadeRect = {
+          x: toElev(p, wall, a.from, a.w),
+          y: p.base,
+          w: a.w,
+          h: a.h - p.base,
+        };
+        const rb: FacadeRect = {
+          x: toElev(p, wall, b.from, b.w),
+          y: p.base,
+          w: b.w,
+          h: b.h - p.base,
+        };
+        push(
+          intersect(ra, rb),
+          `Корпуса модулей «${a.id}» и «${b.id}» перекрываются`,
+          [a.id, b.id],
+        );
+      }
+    }
+
+    // 2) элементы фасадов
+    type El = FacadeRect & { label: string; moduleId: string; path: Path };
+    const els: El[] = [];
+    for (const m of ms) {
+      const { leaves } = layoutModule(p, m);
+      for (const lb of leaves) {
+        if (lb.leaf.face.kind === 'open') continue;
+        els.push({
+          x: toElev(p, wall, lb.x, lb.w),
+          y: lb.y,
+          w: lb.w,
+          h: lb.h,
+          label: `${LEAF_LABEL[lb.leaf.face.kind] ?? lb.leaf.face.kind} ${lb.path.join('.') || '·'}`,
+          moduleId: m.id,
+          path: lb.path,
+        });
+      }
+      for (const sb of slidingBoxes(p, m)) {
+        els.push({
+          x: toElev(p, wall, sb.x, sb.w),
+          y: sb.y,
+          w: sb.w,
+          h: sb.h,
+          label: `купе ×${sb.doors} ${sb.path.join('.') || '·'}`,
+          moduleId: m.id,
+          path: sb.path,
+        });
+      }
+    }
+    for (let i = 0; i < els.length; i++) {
+      for (let j = i + 1; j < els.length; j++) {
+        const a = els[i];
+        const b = els[j];
+        const r = intersect(a, b);
+        if (!r) continue;
+        const sameModule = a.moduleId === b.moduleId;
+        push(
+          r,
+          sameModule
+            ? `Створки перекрываются в модуле «${a.moduleId}»: ${a.label} × ${b.label} (${Math.round(r.w)}×${Math.round(r.h)} мм)`
+            : `Створки перекрываются: «${a.moduleId}» ${a.label} × «${b.moduleId}» ${b.label}`,
+          sameModule ? [a.moduleId] : [a.moduleId, b.moduleId],
+        );
+      }
+    }
+  }
+
+  // склеиваем дубли (один и тот же регион от разных пар)
+  const seen = new Set<string>();
+  return out.filter((r) => {
+    const k = `${Math.round(r.x)}:${Math.round(r.y)}:${Math.round(r.w)}:${Math.round(r.h)}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}

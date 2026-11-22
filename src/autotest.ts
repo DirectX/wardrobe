@@ -28,6 +28,7 @@ import {
   nodeBoxes,
   normalizeTree,
   shelfYsIn,
+  findOverlapRegions,
   slidingAtPoint,
   slidingBoxes,
   snapTolerance,
@@ -1022,6 +1023,79 @@ export function runAutoTest(): void {
 
     const html = buildReportHtml(store.project);
     check('print-mirror: отчёт построен без NaN', !html.includes('NaN') && !html.includes('undefined'));
+  }
+
+  // 23. оверлей перекрытий фасадов
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+      pp.sockets = [];
+    });
+    // чистый модуль: перекрытий нет
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    splitLeaf(bm.id, [], 'v');
+    setFace(bm.id, [0], { kind: 'door', hinge: 'left' });
+    setFace(bm.id, [1], { kind: 'door', hinge: 'right' });
+    check('overlap: чистый фасад без регионов', findOverlapRegions(store.project).length === 0);
+
+    // купе поверх дверец — регион находится
+    setSliding(bm.id, [], { doors: 2, fill: 'графит' });
+    const regions = findOverlapRegions(store.project);
+    check('overlap: купе поверх дверец найдено', regions.length >= 2);
+    check(
+      'overlap: причина описывает створки',
+      regions.some((r) => r.reason.includes('купе') && r.reason.includes('дверца')),
+    );
+    check(
+      'overlap: валидатор выдаёт предупреждение',
+      validate(store.project).some((i) => i.level === 'warn' && i.message.includes('Створки перекрываются')),
+    );
+
+    // оверлей рисуется в DOM фасада
+    renderFacade();
+    const svgEl = document.getElementById('facade');
+    const hatches = svgEl?.querySelectorAll('clipPath[id^="ov-"]') ?? [];
+    check(`overlap: штриховка в DOM (${hatches.length} регионов)`, hatches.length >= 2);
+    const badge = svgEl?.textContent?.includes('перекрытие');
+    check('overlap: подпись «⚠ перекрытие» на чертеже', !!badge);
+
+    // регион покрывает зону дверцы (не degenerate); регионы — в глобальных координатах фасада
+    const m = mod(bm.id);
+    const ib = interiorBox(store.project, m);
+    const gx = wallStart(store.project).center;
+    const big = regions.find((r) => r.w > 100 && r.h > 100);
+    check(
+      'overlap: регион внутри фасада модуля',
+      !!big &&
+        big.x >= gx + ib.x - 1 &&
+        big.x + big.w <= gx + ib.x + ib.w + 1 &&
+        big.y >= store.project.base - 1,
+    );
+
+    // снимаем купе — регионы исчезают
+    setSliding(bm.id, [], null);
+    check('overlap: после снятия купе регионов нет', findOverlapRegions(store.project).length === 0);
+
+    // наложение корпусов (ручной Отступ) тоже детектируется
+    addModule('center');
+    const b2 = modulesOn(store.project, 'center').filter((x) => x.id !== bm.id)[0];
+    store.update((pp) => {
+      const t = pp.modules.find((x) => x.id === b2.id)!;
+      t.from = mod(bm.id).from + 100; // вручную внахлёст
+    });
+    const bodyRegions = findOverlapRegions(store.project).filter((r) => r.reason.includes('Корпуса'));
+    check('overlap: наехавшие корпуса найдены', bodyRegions.length === 1);
+    check(
+      'overlap: валидатор — ошибка пересечения',
+      validate(store.project).some((i) => i.level === 'error' && i.message.includes('пересекаются')),
+    );
+    // чистим
+    store.update((pp) => {
+      pp.modules = pp.modules.filter((x) => x.id !== b2.id);
+    });
   }
 
   // инвариант финальный
