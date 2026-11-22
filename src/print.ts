@@ -88,15 +88,17 @@ function drawFacade(ctx: DrawCtx): void {
 
   for (const wall of WALLS) {
     const L = p.walls[wall].length;
-    // линия стены (тонкая)
+    // линия стены (тонкая); заголовок — по центру плиты (у зеркальной стены
+    // data-ноль на правом краю, подпись там collided бы с соседней стеной)
+    const titleX = ox + (starts[wall] + L / 2) * scale;
     s.push(
       `<line x1="${X(wall, 0)}" y1="${Y(p.ceiling)}" x2="${X(wall, 0)}" y2="${Y(0)}" stroke="#bbb" stroke-width="1"/>`,
-      `<text x="${X(wall, 0)}" y="${Y(p.ceiling) - 6}" font-size="10" fill="#444">${esc(WALL_LABEL[wall])} ${L}</text>`,
+      `<text x="${titleX}" y="${Y(p.ceiling) - 8}" font-size="10" fill="#444" text-anchor="middle">${esc(WALL_LABEL[wall])} — ${L} мм</text>`,
     );
     // угловые зоны (у зеркальной стены start-зона — у правого края плиты)
     const z = cornerZones(p, wall);
-    if (z.start > 0) dimH(ctx, X(wall, 0), Y(0) + 14, X(wall, z.start), Y(0) + 14, `${z.start}`);
-    if (z.end > 0) dimH(ctx, X(wall, L - z.end), Y(0) + 14, X(wall, L), Y(0) + 14, `${z.end}`);
+    if (z.start > 0) dimH(ctx, X(wall, 0), Y(0) + 44, X(wall, z.start), Y(0) + 44, `угол ${z.start}`);
+    if (z.end > 0) dimH(ctx, X(wall, L - z.end), Y(0) + 44, X(wall, L), Y(0) + 44, `угол ${z.end}`);
 
     for (const m of modulesOn(p, wall)) drawModule(ctx, wall, m);
   }
@@ -160,8 +162,9 @@ function drawModule(ctx: DrawCtx, wall: WallId, m: WardModule): void {
   s.push(
     `<rect x="${X0}" y="${Y(m.h)}" width="${m.w * scale}" height="${m.h * scale}" fill="none" stroke="#111" stroke-width="1.4"/>`,
   );
-  // стенки (показываем фактическую толщину; общая — половина)
-  s.push(`<rect x="${X0}" y="${Y(m.h)}" width="${tL * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
+  // стенки (показываем фактическую толщину; общая — половина).
+  // span() учитывает зеркало: data-левая стенка у зеркальной стены — справа на экране
+  s.push(`<rect x="${span(m.from, tL)}" y="${Y(m.h)}" width="${tL * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
   s.push(`<rect x="${span(m.from + m.w - tR, tR)}" y="${Y(m.h)}" width="${tR * scale}" height="${m.h * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
   s.push(`<rect x="${X0}" y="${Y(m.h)}" width="${m.w * scale}" height="${CARCASS_T * scale}" fill="#ddd" stroke="#666" stroke-width="0.5"/>`);
   if (p.base > 0)
@@ -392,9 +395,9 @@ export function buildReportHtml(p: Project): string {
   const totalW = p.walls.left.length + p.walls.center.length + p.walls.right.length + 360;
   const fScale = Math.min(cw / totalW, 380 / p.ceiling);
   const fOx = MARGIN + ((cw - totalW * fScale) / 2) + 180 * fScale;
-  const fOy = 430;
+  const fOy = 440;
   const fCtx: DrawCtx = { s, p, scale: fScale, ox: fOx, oy: fOy };
-  s.push(`<svg width="${PAGE_W}" height="470" viewBox="0 0 ${PAGE_W} 470" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">`);
+  s.push(`<svg width="${PAGE_W}" height="520" viewBox="0 0 ${PAGE_W} 520" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial, sans-serif">`);
   drawFacade(fCtx);
   s.push(`</svg>`);
   const facadeSvg = s.join('');

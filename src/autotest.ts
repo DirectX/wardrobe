@@ -175,13 +175,19 @@ export function runAutoTest(): void {
     })());
   }
 
-  // 8. toggleFace
+  // 8. toggleFace — цикл ниша → дверца → ящик → ниша
   {
-    setFace(box1.id, [], { kind: 'door', hinge: 'left' });
+    const kindNow = () => {
+      const node = mod(box1.id).root;
+      return node.type === 'leaf' ? (node.face as LeafFace).kind : null;
+    };
+    setFace(box1.id, [], { kind: 'open', shelves: 0 });
     toggleFace(box1.id, []);
-    check('toggleFace: door → open', mod(box1.id).root.type === 'leaf' && (mod(box1.id).root as { face: LeafFace }).face.kind === 'open');
+    check('cycle: open → door', kindNow() === 'door');
     toggleFace(box1.id, []);
-    check('toggleFace: open → door', mod(box1.id).root.type === 'leaf' && (mod(box1.id).root as { face: LeafFace }).face.kind === 'door');
+    check('cycle: door → drawers', kindNow() === 'drawers');
+    toggleFace(box1.id, []);
+    check('cycle: drawers → open', kindNow() === 'open');
   }
 
   // 9. ТВ: ниша ок, фасад — ошибка; ниша под ТВ — авто
@@ -1096,6 +1102,73 @@ export function runAutoTest(): void {
     store.update((pp) => {
       pp.modules = pp.modules.filter((x) => x.id !== b2.id);
     });
+  }
+
+  // 24. цикл ниша → дверца → ящик → ниша + BOM стандартного ящика
+  {
+    store.update((pp) => {
+      pp.walls.center.length = 3000;
+      pp.modules = [];
+      pp.tv = null;
+      pp.sockets = [];
+    });
+    addModule('center');
+    const bm = modulesOn(store.project, 'center')[0];
+    // ограничим высоту, чтобы число ящиков было предсказуемым
+    store.update((pp) => {
+      const t = pp.modules.find((x) => x.id === bm.id)!;
+      t.h = 1080;
+    });
+
+    const faceNow = () => {
+      const node = mod(bm.id).root;
+      return node.type === 'leaf' ? node.face.kind : null;
+    };
+    check('cycle: старт — ниша', faceNow() === 'open');
+    toggleFace(bm.id, []);
+    check('cycle: ниша → дверца', faceNow() === 'door');
+    toggleFace(bm.id, []);
+    check('cycle: дверца → ящик', faceNow() === 'drawers');
+    // высота 1080, нутро ~964 → round(964/240) = 4 ящика
+    const drawersFace = (mod(bm.id).root as { face: { drawers?: number } }).face;
+    check(`cycle: число ящиков по высоте (${drawersFace.drawers})`, drawersFace.drawers === 4);
+    toggleFace(bm.id, []);
+    check('cycle: ящик → ниша', faceNow() === 'open');
+
+    // BOM ящика: стандартные зазоры шариковых направляющих
+    toggleFace(bm.id, []); // door
+    toggleFace(bm.id, []); // drawers
+    const parts = buildBom(store.project)[0].parts;
+    const side = parts.find((x) => x.name === 'Царга ящика (бок)');
+    const wallP = parts.find((x) => x.name === 'Стенка короба ящика (перед/зад)');
+    const bottom = parts.find((x) => x.name === 'Дно ящика (ДВП)');
+    const runner = parts.find((x) => x.name.includes('Направляющая шариковая'));
+    const facadeD = parts.find((x) => x.name === 'Фасад ящика');
+    const m = mod(bm.id);
+    const innerW = m.w - 18 - 18;
+    const dh = (m.h - 80 - 36) / 4;
+    check('drawer BOM: 2 царги + 2 стенки + дно + направляющие на каждый ящик',
+      !!side && side.qty === 8 && !!wallP && wallP.qty === 8 && !!bottom && bottom.qty === 4 && !!runner && runner.qty === 4 && !!facadeD && facadeD.qty === 4);
+    // ширина царги = глубина короба = depth − фасад 16 − зазор 15
+    check(
+      `drawer BOM: глубина короба с зазорами (${side?.a} = ${m.depth - 16 - 15})`,
+      !!side && side.a === m.depth - 31,
+    );
+    // высота царги = dh − 10 (сверху) − 15 (снизу)
+    check(
+      `drawer BOM: высота короба с зазорами (${side?.b} ≈ ${Math.round(dh - 25)})`,
+      !!side && Math.abs(side.b - Math.round(dh - 25)) <= 1,
+    );
+    // ширина стенки короба = innerW − 2*12.7 − 2*16
+    check(
+      'drawer BOM: −12.7 мм на сторону по ширине',
+      !!wallP && Math.abs(wallP.b - Math.round(innerW - 2 * 12.7 - 32)) <= 1,
+    );
+    // направляющая — стандартная длина ≤ глубины короба
+    check(
+      `drawer BOM: направляющая стандартная (${runner?.name})`,
+      !!runner && /Направляющая шариковая (250|300|350|400|450|500) мм/.test(runner.name),
+    );
   }
 
   // инвариант финальный

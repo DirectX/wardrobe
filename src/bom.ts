@@ -41,6 +41,20 @@ export interface ModuleBom {
 /** Толщина материала по умолчанию. */
 export const PANEL_T = 16;
 
+/**
+ * Зазоры выдвижного ящика на шариковых (телескопических) направляющих:
+ *  - по ширине: 12.7 мм на сторону (25.4 мм суммарно) — стандарт под короб;
+ *  - по высоте: ≥10 мм сверху, ≥15 мм снизу;
+ *  - по глубине: ≥15 мм от задней стенки.
+ */
+export const DRAWER_SIDE_GAP = 12.7; // на одну сторону, мм
+export const DRAWER_TOP_GAP = 10;
+export const DRAWER_BOT_GAP = 15;
+export const DRAWER_BACK_GAP = 15;
+const HARDBOARD_T = 3.2; // ДВП дно
+/** Стандартные длины шариковых направляющих, мм. */
+const RUNNER_LENGTHS = [250, 300, 350, 400, 450, 500, 550, 600];
+
 export function buildBom(p: Project): ModuleBom[] {
   const out: ModuleBom[] = [];
   for (const wall of ['left', 'center', 'right'] as WallId[]) {
@@ -131,11 +145,25 @@ function moduleParts(p: Project, m: WardModule): Part[] {
         path,
       );
     } else if (face.kind === 'drawers') {
+      // Выдвижной ящик на шариковых направляющих, стандартная конструкция:
+      // фасад + короб (2 царги, передняя/задняя стенка короба) + дно из ДВП.
       const n = Math.max(1, face.drawers);
-      const dh = hMm / n;
+      const dh = hMm / n; // высота отсека на один ящик
+      const boxW = Math.max(50, wMm - 2 * DRAWER_SIDE_GAP); // −12.7 мм на сторону
+      const boxH = Math.max(40, dh - DRAWER_TOP_GAP - DRAWER_BOT_GAP); // −10 сверху, −15 снизу
+      const boxD = Math.max(100, m.depth - PANEL_T - DRAWER_BACK_GAP); // фасад 16 + зазор 15 от задней стенки
+      // направляющие: ближайшая стандартная длина ≤ boxD
+      let runner = RUNNER_LENGTHS[0];
+      for (const L of RUNNER_LENGTHS) if (L <= boxD) runner = L;
       for (let i = 0; i < n; i++) {
-        push('Фасад ящика', dh - 4, wMm - 4, PANEL_T, 'facade', path);
-        push('Короб ящика', dh - 4 - 20, m.depth - 60, PANEL_T, 'drawer-box', path);
+        push('Фасад ящика', Math.round(dh - 4), Math.round(wMm - 4), PANEL_T, 'facade', path);
+        // короб: 2 царги (бока) и 2 стенки (перед+зад); push агрегирует одинаковые
+        push('Царга ящика (бок)', Math.round(boxD), Math.round(boxH), PANEL_T, 'drawer-box', path);
+        push('Царга ящика (бок)', Math.round(boxD), Math.round(boxH), PANEL_T, 'drawer-box', path);
+        push('Стенка короба ящика (перед/зад)', Math.round(boxH), Math.round(boxW - 2 * PANEL_T), PANEL_T, 'drawer-box', path);
+        push('Стенка короба ящика (перед/зад)', Math.round(boxH), Math.round(boxW - 2 * PANEL_T), PANEL_T, 'drawer-box', path);
+        push('Дно ящика (ДВП)', Math.round(boxW - 2 * PANEL_T + 16), Math.round(boxD + 8), HARDBOARD_T, 'drawer-box', path);
+        push(`Направляющая шариковая ${runner} мм (пара)`, runner, 45, 1.2, 'drawer-box', path);
       }
     } else if (face.kind === 'panel') {
       push('Панель глухая', hMm, wMm, PANEL_T, 'facade', path);

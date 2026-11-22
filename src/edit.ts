@@ -388,18 +388,29 @@ export function setFaceGroup(id: string, path: Path, face: LeafFace): void {
   });
 }
 
-/** Двойной клик по отсеку: ниша ↔ дверца. */
+/**
+ * Двойной клик по отсеку: цикл ниша → дверца → ящик → ниша.
+ * Ящик — выдвижной на шариковых направляющих: число ящиков подбираем
+ * по высоте отсека (~240 мм на ящик, 1..6).
+ */
 export function toggleFace(id: string, path: Path): void {
   const p = store.project;
   const m = p.modules.find((x) => x.id === id);
   if (!m) return;
   const node = resolveNode(m.root, path);
   if (node?.type !== 'leaf') return;
-  const face: LeafFace =
-    node.face.kind === 'open'
-      ? { kind: 'door', hinge: 'left', fill: 'дуб лён' }
-      : { kind: 'open', shelves: 0, shelfPitch: null };
-  setFace(id, path, face);
+  const cur = node.face.kind;
+  if (cur === 'open') {
+    setFace(id, path, { kind: 'door', hinge: 'left', fill: 'дуб лён' });
+  } else if (cur === 'door') {
+    const key = path.join('.');
+    const lb = layoutModule(p, m).leaves.find((l) => l.path.join('.') === key);
+    const h = lb?.h ?? 600;
+    const n = Math.max(1, Math.min(6, Math.round(h / 240)));
+    setFace(id, path, { kind: 'drawers', drawers: n, fill: 'дуб лён' });
+  } else {
+    setFace(id, path, { kind: 'open', shelves: 0, shelfPitch: null });
+  }
 }
 
 /** Параметры привязки: кандидаты (в тех же координатах, что pos) и допуск. */

@@ -720,7 +720,7 @@ function renderLeafProps(
     h(
       'div',
       { class: 'row' },
-      btn('⇄ Ниша/дверца', () => toggleFace(m.id, path), 'Быстрое переключение (как двойной клик)'),
+      btn('⇄ Ниша/дверца/ящик', () => toggleFace(m.id, path), 'Цикл: ниша → дверца → ящик → ниша (как двойной клик)'),
       path.length > 0
         ? btn('↑ Наверх', () => {
             select({ kind: 'module', id: m.id }, path.slice(0, -1));
