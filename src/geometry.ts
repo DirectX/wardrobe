@@ -563,7 +563,7 @@ export interface OverlapRegion extends FacadeRect {
 
 const LEAF_LABEL: Record<string, string> = {
   door: 'дверца',
-  drawers: 'ящики',
+  drawers: 'ящик',
   panel: 'панель',
   glass: 'стекло',
 };

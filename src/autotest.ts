@@ -38,7 +38,7 @@ import {
 import { validate } from './validate.ts';
 import { migrate } from './migrate.ts';
 import { bomToCsv, buildBom } from './bom.ts';
-import { leaf } from './defaults.ts';
+import { FACE_LABEL, leaf } from './defaults.ts';
 import { buildReportHtml, elevDataX, moduleDimRefs } from './print.ts';
 import { renderFacade } from './views/facade.ts';
 import { renderLibrary, renderProps } from './panels.ts';
@@ -1169,6 +1169,12 @@ export function runAutoTest(): void {
       `drawer BOM: направляющая стандартная (${runner?.name})`,
       !!runner && /Направляющая шариковая (250|300|350|400|450|500) мм/.test(runner.name),
     );
+  }
+
+  // 25. подпись ящика в единственном числе
+  {
+    check('label: FACE_LABEL.drawers = «Ящик»', FACE_LABEL.drawers === 'Ящик');
+    check('label: в дереве/селекте нет «Ящики»', !String(FACE_LABEL.drawers).includes('Ящики'));
   }
 
   // инвариант финальный

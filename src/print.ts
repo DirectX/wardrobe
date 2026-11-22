@@ -34,15 +34,21 @@ export function openPrintReport(): void {
   if (!w) return;
   w.document.write(html);
   w.document.close();
-  // дать SVG отрисоваться перед вызовом печати
-  w.addEventListener('load', () => setTimeout(() => w.print(), 250));
-  setTimeout(() => {
-    try {
-      if (!w.closed) w.print();
-    } catch {
-      /* окно могло быть закрыто */
-    }
-  }, 600);
+
+  // Диалог печати должен появиться ровно один раз. Раньше print() вызывался
+  // и из onload, и из страховочного таймера — окно печати выскакивало дважды.
+  let printed = false;
+  const doPrint = () => {
+    if (printed || w.closed) return;
+    printed = true;
+    w.print();
+  };
+
+  // основной путь: печать после загрузки/отрисовки SVG
+  w.addEventListener('load', () => setTimeout(doPrint, 250));
+  // страховка на случай, если load уже не сработает (документ был записан
+  // синхронно) — но не раньше, чем основной путь мог бы отработать
+  setTimeout(doPrint, 800);
 }
 
 // ------------------------------------------------------------------ чертёж

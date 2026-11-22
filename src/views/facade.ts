@@ -453,7 +453,7 @@ function renderLeaf(ctx: RenderCtx, m: WardModule, lb: LeafBox, moduleSelected: 
           ? 'стекло'
           : 'дверца'
         : face.kind === 'drawers'
-          ? `ящики ×${face.drawers}`
+          ? `ящик ×${face.drawers}`
           : 'панель';
   out.push(
     `<g data-hit="leaf" data-id="${m.id}" data-path="${pathStr(lb.path)}" style="cursor:pointer">`,

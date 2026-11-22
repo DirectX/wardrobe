@@ -29,7 +29,7 @@ export const FACADE_FILLS: Record<string, string> = {
 export const FACE_LABEL: Record<LeafFace['kind'], string> = {
   open: 'Ниша',
   door: 'Дверца',
-  drawers: 'Ящики',
+  drawers: 'Ящик',
   panel: 'Панель',
 };
 
